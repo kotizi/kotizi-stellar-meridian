@@ -31,17 +31,31 @@ round and claim their prizes). The header shows a "Mock data" badge.
   cancelled / timed out / network error / generic failure, or a network outage that fails every
   read) to show the error states.
 
-## Stellar mode (in progress)
+## Stellar mode
 
 `NEXT_PUBLIC_CHAIN_CLIENT=stellar` points the app at the Kotizi contract on Stellar testnet through
 the kotizi backend (`../backend`, `NEXT_PUBLIC_API_URL`), with `NEXT_PUBLIC_PRIVY_APP_ID` (the same
-Privy app as the backend). The contract id, RPC and network come from the backend's `/v1/config`.
-The client is being built; `AGENTS.md` ("Stellar integration") has the plan.
+Privy app as the backend). The contract id, RPC and network come from the backend's `/v1/config`,
+so the app has no variable of its own for them.
+
+```bash
+# backend (../backend/.env: AUTH_MODE=privy with the same Privy app, CONTRACT_ID, the key files,
+# KYC_MODE=auto, FAUCET_ENABLED=true with FAUCET_TOKEN, CORS_ORIGINS=http://localhost:3000)
+cd ../backend && npm start
+# frontend (.env.local: NEXT_PUBLIC_PRIVY_APP_ID, NEXT_PUBLIC_CHAIN_CLIENT=stellar,
+# NEXT_PUBLIC_API_URL=http://localhost:3001)
+bun run dev
+```
 
 - **Accounts**: email login through Privy, which gives each account a Stellar embedded wallet.
+- **Operator**: "Already have a crypto wallet?" on the landing signs in with Freighter, outside
+  Privy: that account browses the groups and, as the contract's admin, creates them; member
+  screens show a notice for it.
 - **No fees for users**: the wallet only signs Soroban authorization payloads; the backend's relay
   builds the transaction, pays the fee and storage rent, and sends it.
-- **Draws**: "Draw now" asks the backend to run the next step; its keeper also draws on its own.
+- **Draws**: "Draw now" asks the backend to run the next step (a drand round about 30 s ahead,
+  then its beacon, which the contract verifies); its keeper also draws on its own.
+- **Status dialog**: every action's progress, outcome and failure show in one dialog.
 - **Identity verification (demo)**: name, CPF and date of birth at `/verify`, checked in the
   browser and never sent or stored; the backend's `/v1/kyc` (`KYC_MODE=auto`) records the approval
   `join_group` requires and creates the wallet's ledger account.

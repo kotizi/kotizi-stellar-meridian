@@ -182,8 +182,8 @@ scope (roadmap only): marketplace, bids, default handling, real KYC provider, pr
 - **Mock-first**: all chain access goes through the `KotiziClient` interface
   (`src/chain/client.ts`). `MockKotiziClient` (`src/chain/mock/`) mirrors the contract's checks and
   error codes and is the default (`NEXT_PUBLIC_CHAIN_CLIENT=mock`); it stays as a labelled fallback.
-  The Stellar client (`NEXT_PUBLIC_CHAIN_CLIENT=stellar`, in progress, see "Stellar integration")
-  implements the same interface. UI components never import chain libraries.
+  The Stellar client (`NEXT_PUBLIC_CHAIN_CLIENT=stellar`, `src/chain/stellar/`, see "Stellar
+  integration") implements the same interface. UI components never import chain libraries.
 - Draws: `KotiziClient.drawNow({ group })` runs the next step (`request_draw` or `settle_draw`) or
   returns why there is none (`notDue`, `noEligibleShares`, `waitingForRandomness`, `completed`, the
   keeper's reasons). `drawUntilSettled` (`src/chain/draw.ts`) makes the "Draw now" button a single
@@ -234,7 +234,8 @@ src/session/                         src/chain/
                                            ├── api.ts        backend HTTP client, answers checked with Zod
                                            ├── views.ts      backend group/draw fields (toGroupState, toDrawStep)
                                            ├── mock/         MockKotiziClient (localStorage, bots, failure simulation) — default
-                                           └── stellar/      StellarKotiziClient (in progress)
+                                           └── stellar/      StellarKotiziClient: client.ts views.ts errors.ts units.ts,
+                                                             admin-tx.ts (the admin's create_group, on demand)
 src/content/groups.ts   property content per group slug (mock seed + metadata route)
 app/metadata/[file]     GET /metadata/<slug>.json: NFT metadata behind Group.uri (CORS open)
 ```
@@ -263,7 +264,7 @@ fetcher; `useKyc` stops polling once the record exists (actions still refetch it
   (`hooks.ts`), the open groups list 20 s, a group page 5 s, the share list 30 s (own actions refetch
   at once); group metadata is cached once per uri for the whole app (`cachedGroupMetadata`).
 
-## Stellar integration (in progress, 2026-10-25)
+## Stellar integration (done, 2026-10-25)
 
 Plan (one commit per part, `bun run quality` and `bun run build` after each; branch
 `feature/stellar-frontend-integration`):
@@ -388,7 +389,19 @@ Plan (one commit per part, `bun run quality` and `bun run build` after each; bra
    - **Checked on testnet (2026-10-25)**: the client created group 4 ("Vila Cerrado") with the deployer
      key standing in for Freighter, and read it back; a 10.01% fee was refused in the real simulation
      (`FeeTooHigh`) before anything was signed. With Freighter itself: the user's test.
-7. End to end in the browser on testnet (Privy app with Stellar enabled, backend running).
+7. End to end in the browser on testnet. **Done** (2026-10-25; checked by the user in the browser
+   across parts 3–7, against a local backend and an own testnet deployment): email login with a new
+   Privy account and its Stellar wallet, `/verify`
+   approving the identity on chain, the open groups with their property content, joining with the
+   checkout's deposit (faucet + `join_group` + `pay_quota` through the relay, signed by Privy's
+   `useSignRawHash`), "Draw now" settling a drand draw from the button until a 2-share group was
+   completed, the credit screen, the operator's Freighter sign-in and group creation. The keeper's
+   own draws were checked by script (it requested and settled a draw unattended).
+   Known limits, for the pitch or a next round: the keeper draws on the due date with whatever paid
+   (the 80% threshold is the app's only); a join's first installment is a second transaction; the
+   faucet gives one fixed deposit a day; wallet sign-in is for the operator only (members would need
+   wallet login and Freighter's `signAuthEntry` in the backend); Circle's USDC groups need trustlines
+   the app doesn't create.
 
 Facts to build on:
 
