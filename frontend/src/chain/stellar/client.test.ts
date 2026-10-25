@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { z } from "zod";
 
+import type { SessionSigner } from "@/session/context";
+
 import { BackendError, type BackendApi } from "../api";
 import { KotiziError } from "../errors";
 import { StellarKotiziClient } from "./client";
@@ -70,17 +72,47 @@ const member = (index: number, owner: string, totalPaid = "100000000") => ({
   claimable: false,
 });
 
-/** A backend answering from `routes` ("METHOD /path"), checking every answer with the client's schema. */
-function setup(routes: Record<string, (body: unknown) => unknown> = {}) {
+const PAYLOAD = "11".repeat(32);
+
+/** A wallet that signs every hash with 64 bytes of 0xab, recording what it was asked to sign. */
+function fakeSigner(address = ME) {
+  const signed: Uint8Array[] = [];
+  const signer: SessionSigner = {
+    address,
+    signHash: async (hash) => {
+      signed.push(hash);
+      return new Uint8Array(64).fill(0xab);
+    },
+  };
+  return { signer, signed };
+}
+
+/**
+ * A backend answering from `routes` ("METHOD /path"), checking every answer with the client's schema.
+ * Its relay applies a join to group 0's member list, like the chain would.
+ */
+function setup(routes: Record<string, (body: unknown) => unknown> = {}, { signer = null }: { signer?: SessionSigner | null } = {}) {
   const calls: { key: string; body?: unknown; auth: boolean }[] = [];
+  const members0 = [member(0, OTHER), member(1, ME)];
+  let prepared: { fn: string; wallet: string } | null = null;
   const all: Record<string, (body: unknown) => unknown> = {
     "GET /v1/config": () => config(),
     "GET /v1/groups": () => ({
       groups: [groupView(0), groupView(1, { mint: USDC, decimals: 7, quotaAmount: "1000000000" })],
     }),
-    "GET /v1/groups/0": () => groupView(0),
+    "GET /v1/groups/0": () => groupView(0, { membersJoined: members0.length }),
     "GET /v1/groups/1": () => groupView(1, { mint: USDC, decimals: 7, quotaAmount: "1000000000", winners: [], unclaimedIndexes: [], unclaimedTotal: "0" }),
-    "GET /v1/groups/0/members": () => ({ group: "0", members: [member(0, OTHER), member(1, ME)] }),
+    "GET /v1/groups/0/members": () => ({ group: "0", members: [...members0] }),
+    "POST /v1/tx/prepare": (body) => {
+      prepared = body as { fn: string; wallet: string };
+      return { transaction: "AAAA", validUntilLedger: 1_000, payloads: [{ address: prepared.wallet, payload: PAYLOAD }] };
+    },
+    "POST /v1/tx/relay": () => {
+      if (prepared?.fn === "join_group") members0.push(member(members0.length, prepared.wallet, "0"));
+      return { txHash: `tx-${prepared?.fn}`, kinds: [prepared?.fn ?? ""] };
+    },
+    "POST /v1/groups/0/draw": () => ({ action: "request", txHash: "draw-tx", reason: null }),
+    "POST /v1/faucet": (body) => ({ wallet: (body as { wallet: string }).wallet, amount: "10000000000", txHash: "faucet-tx" }),
     "GET /v1/groups/1/members": () => ({ group: "1", members: [member(0, ME, "1000000000")] }),
     "GET /v1/me": () => ({
       userId: "did:privy:me",
@@ -102,7 +134,7 @@ function setup(routes: Record<string, (body: unknown) => unknown> = {}) {
       return schema.parse(route(options.body));
     },
   };
-  return { client: new StellarKotiziClient({ api, signer: null }), calls };
+  return { client: new StellarKotiziClient({ api, signer }), calls };
 }
 
 const codeOf = (promise: Promise<unknown>) =>
@@ -220,9 +252,150 @@ describe("failures", () => {
     await expect(client.getGroup("0")).rejects.toThrow();
   });
 
-  test("writes aren't available yet and say so", async () => {
+  test("group creation isn't available yet and says so", async () => {
     const { client } = setup();
-    expect(await codeOf(client.payQuota())).toBe("TransactionFailed");
-    expect(await codeOf(client.drawNow())).toBe("TransactionFailed");
+    expect(await codeOf(client.createGroup())).toBe("TransactionFailed");
+  });
+});
+
+describe("gasless actions (prepare, sign, relay)", () => {
+  test("a payment: the backend builds it, the wallet signs its payload, the relay sends it", async () => {
+    const { signer, signed } = fakeSigner();
+    const { client, calls } = setup({}, { signer });
+    expect(await client.payQuota({ owner: ME, membership: "0-1" })).toEqual({ signature: "tx-pay_quota" });
+
+    expect(calls.find((c) => c.key === "POST /v1/tx/prepare")).toEqual({
+      key: "POST /v1/tx/prepare",
+      body: { fn: "pay_quota", groupId: 0, index: 1, wallet: ME },
+      auth: true,
+    });
+    expect(signed).toEqual([new Uint8Array(32).fill(0x11)]);
+    expect(calls.find((c) => c.key === "POST /v1/tx/relay")?.body).toEqual({
+      transaction: "AAAA",
+      validUntilLedger: 1_000,
+      signatures: ["ab".repeat(64)],
+    });
+  });
+
+  test("a join with its first installment: two relayed calls, the new share found by its owner", async () => {
+    const { signer } = fakeSigner();
+    const { client, calls } = setup({}, { signer });
+    const result = await client.joinGroup({ owner: ME, group: "0", payFirstQuota: true });
+    expect(result).toEqual({ signature: "tx-pay_quota", membership: "0-2" });
+    expect(calls.filter((c) => c.key === "POST /v1/tx/prepare").map((c) => c.body)).toEqual([
+      { fn: "join_group", groupId: 0, index: undefined, wallet: ME },
+      { fn: "pay_quota", groupId: 0, index: 2, wallet: ME },
+    ]);
+  });
+
+  test("a join alone answers the join's transaction", async () => {
+    const { signer } = fakeSigner();
+    const { client } = setup({}, { signer });
+    expect(await client.joinGroup({ owner: ME, group: "0" })).toEqual({ signature: "tx-join_group", membership: "0-2" });
+  });
+
+  test("claiming relays claim_prize for the share", async () => {
+    const { signer } = fakeSigner();
+    const { client, calls } = setup({}, { signer });
+    await client.claimPrize({ owner: ME, membership: "0-1" });
+    expect(calls.find((c) => c.key === "POST /v1/tx/prepare")?.body).toMatchObject({ fn: "claim_prize", groupId: 0, index: 1 });
+  });
+
+  test("a payload for any other address is refused before anything is signed", async () => {
+    const { signer, signed } = fakeSigner();
+    const { client, calls } = setup(
+      { "POST /v1/tx/prepare": () => ({ transaction: "AAAA", validUntilLedger: 1_000, payloads: [{ address: OTHER, payload: PAYLOAD }] }) },
+      { signer },
+    );
+    expect(await codeOf(client.payQuota({ owner: ME, membership: "0-1" }))).toBe("NotAssetOwner");
+    expect(signed).toHaveLength(0);
+    expect(calls.some((c) => c.key === "POST /v1/tx/relay")).toBe(false);
+  });
+
+  test("nothing is sent without the session's wallet, for another owner, or for an id the contract can't have", async () => {
+    const { client: signedOut, calls: none } = setup();
+    expect(await codeOf(signedOut.payQuota({ owner: ME, membership: "0-1" }))).toBe("SessionExpired");
+    const { signer } = fakeSigner();
+    const { client, calls } = setup({}, { signer });
+    expect(await codeOf(client.payQuota({ owner: OTHER, membership: "0-0" }))).toBe("NotAssetOwner");
+    expect(await codeOf(client.payQuota({ owner: ME, membership: "zero" }))).toBe("AccountNotFound");
+    expect([...none, ...calls].some((c) => c.key.startsWith("POST"))).toBe(false);
+  });
+
+  test("the contract's refusal comes back as the app's code", async () => {
+    const { signer } = fakeSigner();
+    const { client } = setup(
+      {
+        "POST /v1/tx/prepare": () => {
+          throw new BackendError(422, "contract_error", "AlreadyPaid");
+        },
+      },
+      { signer },
+    );
+    expect(await codeOf(client.payQuota({ owner: ME, membership: "0-1" }))).toBe("AlreadyPaid");
+  });
+
+  test("a wallet that declines to sign cancels the action", async () => {
+    const signer: SessionSigner = { address: ME, signHash: () => Promise.reject(new Error("User rejected the request")) };
+    const { client, calls } = setup({}, { signer });
+    expect(await codeOf(client.payQuota({ owner: ME, membership: "0-1" }))).toBe("UserRejected");
+    expect(calls.some((c) => c.key === "POST /v1/tx/relay")).toBe(false);
+  });
+
+  test("one relayed call at a time: the second prepares after the first is sent", async () => {
+    const { signer } = fakeSigner();
+    const { client, calls } = setup({}, { signer });
+    await Promise.all([
+      client.payQuota({ owner: ME, membership: "0-1" }),
+      client.claimPrize({ owner: ME, membership: "0-1" }),
+    ]);
+    expect(calls.filter((c) => c.key.startsWith("POST")).map((c) => c.key)).toEqual([
+      "POST /v1/tx/prepare",
+      "POST /v1/tx/relay",
+      "POST /v1/tx/prepare",
+      "POST /v1/tx/relay",
+    ]);
+  });
+});
+
+describe("draws and the test faucet", () => {
+  test("draw now runs the keeper's next step", async () => {
+    const { client, calls } = setup();
+    expect(await client.drawNow({ group: "0" })).toEqual({ action: "request", signature: "draw-tx" });
+    expect(calls.at(-1)).toMatchObject({ key: "POST /v1/groups/0/draw", auth: true });
+  });
+
+  test("or says why there is none, in the app's words", async () => {
+    const { client } = setup({ "POST /v1/groups/0/draw": () => ({ action: null, txHash: null, reason: "not_due" }) });
+    expect(await client.drawNow({ group: "0" })).toEqual({ action: null, reason: "notDue" });
+  });
+
+  test("a beacon the contract rejects comes back as its own code", async () => {
+    const { client } = setup({
+      "POST /v1/groups/0/draw": () => {
+        throw new BackendError(422, "draw_failed", "InvalidBeacon");
+      },
+    });
+    expect(await codeOf(client.drawNow({ group: "0" }))).toBe("InvalidBeacon");
+  });
+
+  test("the faucet mints to the wallet, and a second deposit the same day is limited", async () => {
+    const { client, calls } = setup();
+    expect(await client.testing.fundUsdc(ME)).toEqual({ signature: "faucet-tx" });
+    expect(calls.at(-1)).toEqual({ key: "POST /v1/faucet", body: { wallet: ME }, auth: true });
+    const { client: limited } = setup({
+      "POST /v1/faucet": () => {
+        throw new BackendError(429, "faucet_limit", "One faucet claim per wallet per day");
+      },
+    });
+    expect(await codeOf(limited.testing.fundUsdc(ME))).toBe("FaucetLimit");
+  });
+
+  test("the checkout deposits only when the wallet can't cover the payment", async () => {
+    const { client, calls } = setup();
+    // The wallet holds 250 USD of the demo token.
+    expect(await client.testing.depositShortfall({ owner: ME, amount: 100_000_000n })).toBeNull();
+    expect(calls.some((c) => c.key === "POST /v1/faucet")).toBe(false);
+    expect(await client.testing.depositShortfall({ owner: ME, amount: 500_000_000n })).toEqual({ signature: "faucet-tx" });
   });
 });

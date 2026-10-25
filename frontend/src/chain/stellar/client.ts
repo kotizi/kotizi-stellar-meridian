@@ -1,26 +1,35 @@
 import { z } from "zod";
 
+import { createSerialQueue } from "@/lib/serial";
 import type { SessionSigner } from "@/session/context";
 
 import { BackendError, type BackendApi } from "../api";
 import type { KotiziClient } from "../client";
 import { KotiziError } from "../errors";
-import { parseGroupId } from "../ids";
+import { membershipIdOf, parseGroupId, parseMembershipId } from "../ids";
 import { cachedGroupMetadata } from "../metadata";
 import type { Address, DrawStep, Group, GroupId, KycRecord, Membership, MembershipId, TxResult } from "../types";
+import { toDrawStep } from "../views";
 import { toStellarError } from "./errors";
 import { toAppUnits } from "./units";
 import {
   configViewSchema,
+  drawViewSchema,
+  faucetViewSchema,
   groupViewSchema,
   kycViewSchema,
   membersViewSchema,
   meViewSchema,
+  prepareViewSchema,
+  relayViewSchema,
   toGroup,
   toMembership,
   type ConfigView,
   type MeView,
 } from "./views";
+
+/** The calls the backend relays (`RELAY_FUNCTIONS` in backend/src/relay/validate.ts). */
+type RelayFunction = "join_group" | "pay_quota" | "claim_prize";
 
 /** The public network's passphrase: the app never sends anything there. */
 const PUBLIC_NETWORK_PASSPHRASE = "Public Global Stellar Network ; September 2015";
@@ -34,14 +43,19 @@ const PUBLIC_NETWORK_PASSPHRASE = "Public Global Stellar Network ; September 201
  * - The open groups list keeps only the groups in the faucet's token (user decision, 2026-10-25):
  *   on testnet that's the token our users can be funded in (Circle's USDC needs a trustline the app
  *   doesn't create, and the 7-decimal test token has no faucet). Any group still opens by id.
- * - Writes (join, pay, claim, draw, the checkout's deposit) arrive with the relay; group creation
- *   with the admin's Freighter wallet.
+ * - Every user action is gasless: the backend builds the call with its sponsor as the source and
+ *   answers the authorization payloads; the session's wallet signs each one (`signHash`, no prompt:
+ *   our screens are the confirmation) and the relay sends it, paying the fee and the rent. One call
+ *   at a time.
+ * - Draws, identity approval and the test faucet are run by the backend with its own keys. Group
+ *   creation arrives with the admin's Freighter wallet.
  */
 export class StellarKotiziClient implements KotiziClient {
   readonly kind = "stellar" as const;
   private config: Promise<ConfigView> | null = null;
   private readonly groupsInFlight = new Map<number, Promise<{ group: Group; decimals: number } | null>>();
   private meInFlight: Promise<MeView> | null = null;
+  private readonly serial = createSerialQueue();
 
   constructor(
     private readonly deps: {
@@ -145,25 +159,65 @@ export class StellarKotiziClient implements KotiziClient {
     });
   }
 
-  joinGroup(): Promise<TxResult & { membership: MembershipId }> {
-    return notYet("joinGroup");
+  /**
+   * `join_group`, then (when asked) `pay_quota` for the new share: two relayed calls, since the relay
+   * takes one function per transaction. The relay answers once the join is confirmed but not with the
+   * new index, so the new share is the one this wallet didn't hold before.
+   */
+  joinGroup({ owner, group, payFirstQuota }: { owner: Address; group: GroupId; payFirstQuota?: boolean }) {
+    return this.wrap(async () => {
+      const groupId = requireGroupId(group);
+      const before = await this.ownedIndexes(groupId, owner);
+      const joined = await this.relay(owner, "join_group", groupId);
+      const index = [...(await this.ownedIndexes(groupId, owner))].find((i) => !before.has(i));
+      if (index === undefined) throw new KotiziError("TransactionFailed", { cause: new Error("The joined share wasn't found") });
+      const result = payFirstQuota ? await this.relay(owner, "pay_quota", groupId, index) : joined;
+      return { ...result, membership: membershipIdOf(groupId, index) };
+    });
   }
 
-  payQuota(): Promise<TxResult> {
-    return notYet("payQuota");
+  payQuota({ owner, membership }: { owner: Address; membership: MembershipId }) {
+    return this.wrap(async () => {
+      const { groupId, index } = requireShare(membership);
+      return this.relay(owner, "pay_quota", groupId, index);
+    });
   }
 
-  claimPrize(): Promise<TxResult> {
-    return notYet("claimPrize");
+  claimPrize({ owner, membership }: { owner: Address; membership: MembershipId }) {
+    return this.wrap(async () => {
+      const { groupId, index } = requireShare(membership);
+      return this.relay(owner, "claim_prize", groupId, index);
+    });
   }
 
-  drawNow(): Promise<DrawStep> {
-    return notYet("drawNow");
+  /** The backend's keeper runs the step (`request_draw` or `settle_draw` with the drand beacon) and pays it. */
+  drawNow({ group }: { group: GroupId }) {
+    return this.wrap(async (): Promise<DrawStep> => {
+      const groupId = requireGroupId(group);
+      const view = await this.deps.api.request(`/v1/groups/${groupId}/draw`, drawViewSchema, { method: "POST", auth: true });
+      return toDrawStep(view.action, view.txHash, view.reason);
+    });
   }
 
   createGroup(): Promise<TxResult & { group: GroupId }> {
     return notYet("createGroup");
   }
+
+  readonly testing = {
+    /**
+     * The backend's faucet: mints its own fixed amount of the demo token (`FAUCET_AMOUNT_USDC`),
+     * once per wallet per day (`FaucetLimit` after that), whatever `amount` says.
+     */
+    fundUsdc: (wallet: Address) =>
+      this.wrap(async () => {
+        const result = await this.deps.api.request("/v1/faucet", faucetViewSchema, { method: "POST", body: { wallet }, auth: true });
+        this.meInFlight = null;
+        return { signature: result.txHash };
+      }),
+    /** The checkout's deposit: the faucet, only when the wallet can't cover `amount` already. */
+    depositShortfall: ({ owner, amount }: { owner: Address; amount: bigint }) =>
+      this.wrap(async () => ((await this.getUsdcBalance(owner)) >= amount ? null : this.testing.fundUsdc(owner))),
+  };
 
   // --- helpers -------------------------------------------------------------------------------
 
@@ -199,6 +253,40 @@ export class StellarKotiziClient implements KotiziClient {
     return list.members.map((m) => toMembership(found.group, found.decimals, m));
   }
 
+  private async ownedIndexes(groupId: number, owner: Address) {
+    return new Set((await this.members(groupId)).filter((m) => m.owner === owner).map((m) => m.index));
+  }
+
+  /**
+   * The gasless path: the backend builds and simulates the call with its sponsor as the source and
+   * answers the authorization payloads; the session's wallet signs each one and the relay sends the
+   * transaction, answering once it is confirmed. A payload for any other address is refused before
+   * anything is signed. One call at a time, so a join and its first payment never cross.
+   */
+  private relay(owner: Address, fn: RelayFunction, groupId: number, index?: number): Promise<TxResult> {
+    return this.serial(async () => {
+      const signer = this.deps.signer;
+      if (!signer) throw new KotiziError("SessionExpired");
+      if (signer.address !== owner) throw new KotiziError("NotAssetOwner");
+      const prep = await this.deps.api.request("/v1/tx/prepare", prepareViewSchema, {
+        method: "POST",
+        auth: true,
+        body: { fn, groupId, index, wallet: signer.address },
+      });
+      if (prep.payloads.some((p) => p.address !== signer.address)) throw new KotiziError("NotAssetOwner");
+      const signatures: string[] = [];
+      for (const { payload } of prep.payloads) signatures.push(hexOf(await signer.signHash(bytesOf(payload))));
+      const { txHash } = await this.deps.api.request("/v1/tx/relay", relayViewSchema, {
+        method: "POST",
+        auth: true,
+        body: { transaction: prep.transaction, validUntilLedger: prep.validUntilLedger, signatures },
+      });
+      // Balances and shares changed: the next `/v1/me` read asks again.
+      this.meInFlight = null;
+      return { signature: txHash };
+    });
+  }
+
   /** The account's wallets and shares: reads that poll together share one request. */
   private me() {
     this.meInFlight ??= this.deps.api.request("/v1/me", meViewSchema, { auth: true }).finally(() => {
@@ -222,7 +310,31 @@ function nullIfMissing(error: unknown): null {
   throw error;
 }
 
-/** Writes arrive with the relay (part 5 of the Stellar plan, AGENTS.md); until then they fail plainly. */
+/** A group id the contract can have, or `AccountNotFound` (nothing is sent). */
+function requireGroupId(id: GroupId): number {
+  const groupId = parseGroupId(id);
+  if (groupId === null) throw new KotiziError("AccountNotFound");
+  return groupId;
+}
+
+/** A share id's group and index, or `AccountNotFound` (nothing is sent). */
+function requireShare(id: MembershipId): { groupId: number; index: number } {
+  const share = parseMembershipId(id);
+  if (!share) throw new KotiziError("AccountNotFound");
+  return share;
+}
+
+/** The backend's hex (no `0x`) as bytes. */
+function bytesOf(hex: string): Uint8Array {
+  return Uint8Array.from(hex.match(/../g) ?? [], (pair) => parseInt(pair, 16));
+}
+
+/** Bytes as the backend's hex (no `0x`). */
+function hexOf(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Group creation arrives with the admin's Freighter wallet (part 6 of the Stellar plan, AGENTS.md). */
 function notYet(action: string): Promise<never> {
   return Promise.reject(new KotiziError("TransactionFailed", { cause: new Error(`${action} isn't available on Stellar yet`) }));
 }

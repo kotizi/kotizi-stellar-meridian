@@ -92,6 +92,35 @@ export const kycViewSchema = z.object({
   activationTx: z.string().nullable(),
 });
 
+/** A 32-byte authorization payload or ed25519 key, as the backend's hex. */
+const hex32 = z.string().regex(/^[0-9a-fA-F]{64}$/);
+
+/**
+ * `POST /v1/tx/prepare`: the call built and simulated with the sponsor as its source, and what the
+ * wallet signs, one 32-byte payload per Soroban authorization entry, in order.
+ */
+export const prepareViewSchema = z.object({
+  /** The assembled, unsigned transaction (base64 XDR): sent back untouched with the signatures. */
+  transaction: z.string().min(1),
+  /** The ledger the authorization signatures stay valid until. */
+  validUntilLedger: z.number().int().positive(),
+  payloads: z.array(z.object({ address: z.string(), payload: hex32 })).min(1),
+});
+export type PrepareView = z.infer<typeof prepareViewSchema>;
+
+/** `POST /v1/tx/relay`: answered once the transaction is confirmed. */
+export const relayViewSchema = z.object({ txHash: z.string().min(1), kinds: z.array(z.string()) });
+
+/** `POST /v1/groups/:id/draw`: the step the keeper ran, or why there was none. */
+export const drawViewSchema = z.object({
+  action: z.enum(["request", "settle"]).nullable(),
+  txHash: z.string().nullable(),
+  reason: z.string().nullable(),
+});
+
+/** `POST /v1/faucet`: the demo token minted to the wallet (a fixed amount, once a day). */
+export const faucetViewSchema = z.object({ wallet: z.string(), amount: numericString, txHash: z.string().min(1) });
+
 /** A group view in the app's types, its amounts in the app's unit. */
 export function toGroup(view: GroupView, decimals: number): Group {
   const state = toGroupState(view);
