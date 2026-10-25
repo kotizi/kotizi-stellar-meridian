@@ -301,8 +301,33 @@ Plan (one commit per part, `bun run quality` and `bun run build` after each; bra
    - **Checked with a real Privy app (2026-10-25)**: a new email account got its embedded Stellar wallet
      (a `G…` address in Privy's dashboard) this way. Signing (`useSignRawHash`) is first exercised by
      the relay in part 5; the backend's `stellarWalletsOf` reads the same `chain_type: "stellar"`.
-4. `StellarKotiziClient` reads (`src/chain/stellar/`: views with Zod schemas per route, ids, errors,
-   client), tested with a fake `request`.
+4. `StellarKotiziClient` reads. **Done** (`src/chain/stellar/`, each module tested; the client tests
+   use a fake `request` that runs each schema, so fixtures must match the backend):
+   - `createKotiziClient({ signer, getAccessToken })` (`chain/index.ts`) returns it with
+     `NEXT_PUBLIC_CHAIN_CLIENT=stellar` (`createBackendApi` on `NEXT_PUBLIC_API_URL`); `ChainProvider`
+     rebuilds it when the session's signer or token source changes. The mock stays the default.
+   - `views.ts`: one Zod schema per route (`configViewSchema`, `groupViewSchema` =
+     `groupStateViewSchema.extend`, `membersViewSchema`, `meViewSchema`, `kycViewSchema`) and
+     `toGroup`/`toMembership`. Checked against the running backend (2026-10-25): `/v1/config`,
+     `/v1/groups`, `/v1/groups/:id` and `/members` parse.
+   - `units.ts`: `toAppUnits` (token → app, a 7-decimal token drops its last digit, for display only)
+     and `toTokenUnits` (app → token, exact or `InvalidQuota`, for what goes on chain).
+   - Reads: groups and members from the backend (ids per `ids.ts`, invalid ids never sent, 404 → null,
+     concurrent reads of a group share one request); the account's shares, identity flag and balance
+     from `/v1/me` (one request per poll, `getKyc` → `{ approvedAt: 0 }`, `getUsdcBalance` = the
+     faucet token's balance); `isTestNetwork` = the passphrase isn't the public network's; `isAdmin`
+     = `/v1/config` → `admin` (read once).
+   - **The open list keeps only groups in the faucet's token** (`faucetToken`, user decision
+     2026-10-25): Circle's USDC needs a trustline the app doesn't create and the 7-decimal test token
+     has no faucet. Any group still opens by id; without a faucet every group is listed.
+   - `verifyIdentity` → `POST /v1/kyc { wallet }` (also creates the ledger account). It is here and
+     not in part 5 because every new account goes through `/verify`.
+   - `errors.ts`: `CONTRACT_ERRORS` (the contract's names in `contract_error`/`draw_failed` → app
+     codes) plus `UNMAPPED_CONTRACT_ERRORS`; a test reads `contract/kotizi/src/errors.rs` and fails on
+     any name in neither. Also `Error(Contract, #100)` (the demo token's `InsufficientBalance`) →
+     `InsufficientFunds`, `account_not_active` → `KycRequired`, `authorization_expired` →
+     `TransactionExpired`, `not_user_wallet` → `NotAssetOwner`.
+   - Join, pay, claim, draw and group creation fail with `TransactionFailed` until parts 5 and 6.
 5. `StellarKotiziClient` actions: join (+ first installment as a second relayed call), pay, claim,
    draw now, identity, faucet and the checkout's deposit; one relayed call at a time.
 6. Admin group creation with Freighter: the admin connects Freighter on the admin screen, the app

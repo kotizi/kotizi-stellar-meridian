@@ -2,13 +2,16 @@
 
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 
+import { useSession } from "@/session/context";
+
 import { createKotiziClient, type KotiziClient } from "./index";
 
 const ChainContext = createContext<KotiziClient | null>(null);
 
-/** Provides the chain client (for now always the mock). */
+/** Provides the chain client, rebuilt with the session's signer and token source. Must sit inside the session. */
 export function ChainProvider({ children }: { children: ReactNode }) {
-  const client = useMemo(() => createKotiziClient(), []);
+  const { signer, getAccessToken } = useSession();
+  const client = useMemo(() => createKotiziClient({ signer, getAccessToken }), [signer, getAccessToken]);
   return <ChainContext value={client}>{children}</ChainContext>;
 }
 
