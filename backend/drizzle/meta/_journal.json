@@ -15,6 +15,13 @@
       "when": 1792946421616,
       "tag": "0001_futuristic_silverclaw",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792953987575,
+      "tag": "0002_noisy_rattler",
+      "breakpoints": true
     }
   ]
 }

@@ -34,18 +34,3 @@ export const faucetClaims = pgTable(
   },
   (t) => [index('faucet_claims_wallet_created').on(t.wallet, t.createdAt)],
 );
-
-/**
- * Secrets of the draws the keeper has committed to (`request_draw`), kept until `settle_draw` reveals them.
- * Stored in clear for the testnet demo: whoever reads this table can predict the winner of a pending draw.
- */
-export const drawSecrets = pgTable(
-  'draw_secrets',
-  {
-    commitment: text('commitment').primaryKey(),
-    groupId: integer('group_id').notNull(),
-    secret: text('secret').notNull(),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-  },
-  (t) => [index('draw_secrets_group').on(t.groupId)],
-);

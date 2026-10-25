@@ -8,7 +8,11 @@ Redeploying the contract changes the Kotizi ID: update `CONTRACT_ID` in `backend
 | Contract | ID |
 |---|---|
 | test-usdc (6 decimals) | `CADKFUPE2RCG4RUD5C4JHIE5DBZ27AT7KFAIZSLMTJO4NNHWTITLIGHK` |
-| kotizi | `CC4VXKV4PXLGJDKFXPRHSO527JSWWRPBWRYTO3UBIXXVGVF67MD5ZXUB` |
+| kotizi (drand randomness, branch `feat/drand-randomness`) | `CA3LSTPIZWLX3DXRZMZMQPS63OWJ3FR3ZUW4VVH3J5ZR4YWKEAUBIZJV` |
+| kotizi, commit-reveal version (obsolete, replaced) | `CC4VXKV4PXLGJDKFXPRHSO527JSWWRPBWRYTO3UBIXXVGVF67MD5ZXUB` |
+
+The `kotizi` above predates the typed `Result<_, Error>` signatures (same behavior and error codes, but its on-chain spec
+lacks the error types): redeploy before generating the frontend bindings, then update this file and `CONTRACT_ID`.
 
 Constructors: test-usdc `(admin = deployer, decimals = 6)`; kotizi `(admin = deployer, kyc_authority = kyc, token = test-usdc)`.
 
@@ -22,12 +26,12 @@ Constructors: test-usdc `(admin = deployer, decimals = 6)`; kotizi `(admin = dep
 | kyc (kyc_authority) | `GCZDM42GVKWTNDMO3QG6W7H4PQEUYG2XQI7KL7UVBJ4K6X7BM747I4GS` | `keypairs/kyc.key` |
 | mint (unused: test-usdc `mint` is admin-only, so the faucet uses deployer) | `GDKKKBUQBWFFJ3FWDYXE7ZCVLDJ6UQACQS7KO6FAIMDS5K7HTZB7BJDM` | `keypairs/mint.key` |
 
-## Demo groups
+## Demo groups (current contract)
 
 | id | name | cotas | quota | period |
 |---|---|---|---|---|
-| 0 | Casa Demo | 3 | 10 USDC | 60 s |
-| 1 | Duo | 2 | 10 USDC | 30 s (journey run to completion of round 0) |
+| 0 | Duo | 2 | 10 USDC | 30 s (journey run to completion of round 0: drand draw settled, prize claimed) |
+| 1 | Duo | 2 | 10 USDC | 30 s (unused) |
 
 ## Journey
 

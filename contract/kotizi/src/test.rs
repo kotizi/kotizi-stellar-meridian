@@ -5,12 +5,14 @@ use soroban_sdk::{
         storage::{Instance as _, Persistent as _},
         Address as _, Ledger, MockAuth, MockAuthInvoke,
     },
-    Address, Bytes, BytesN, Env, IntoVal, String,
+    Address, BytesN, Env, IntoVal, String,
 };
 use stellar_tokens::non_fungible::NonFungibleTokenClient;
 use test_usdc::{TestUsdc, TestUsdcClient};
 
-use crate::types::{COMMIT_DELAY, COMMIT_EXPIRY};
+use crate::drand::{round_time, GENESIS, PERIOD};
+use crate::test_beacons::BEACONS;
+use crate::types::{DRAW_EXPIRY_SECS, DRAW_ROUND_DELAY};
 use crate::{Error, Kotizi, KotiziClient, Status};
 
 const QUOTA: i128 = 100_000_000; // 100 USDC
@@ -26,7 +28,8 @@ struct Setup<'a> {
 fn setup<'a>() -> Setup<'a> {
     let e = Env::default();
     e.mock_all_auths();
-    e.ledger().set_timestamp(1_000);
+    // A few minutes before the first test beacon (round 1_000_000), so draws land on real drand rounds.
+    e.ledger().set_timestamp(GENESIS + 2_999_000);
     let admin = Address::generate(&e);
     let kyc = Address::generate(&e);
     let token = e.register(TestUsdc, (&admin, 6u32));
@@ -82,7 +85,7 @@ fn kyc_approval_is_once_and_authority_only() {
     assert!(s.kotizi.is_kyc(&w));
     assert_eq!(
         s.kotizi.try_approve_kyc(&w),
-        Err(Ok(Error::AlreadyApproved.into()))
+        Err(Ok(Error::AlreadyApproved))
     );
 
     // the admin is not the KYC authority: only the authority's signature is accepted
@@ -109,28 +112,28 @@ fn create_group_validates_and_is_admin_only() {
     let k = &s.kotizi;
     assert_eq!(
         k.try_create_group(&name, &uri, &0, &5, &60, &0),
-        Err(Ok(Error::InvalidQuota.into()))
+        Err(Ok(Error::InvalidQuota))
     );
     assert_eq!(
         k.try_create_group(&name, &uri, &QUOTA, &1, &60, &0),
-        Err(Ok(Error::InvalidMaxMembers.into()))
+        Err(Ok(Error::InvalidMaxMembers))
     );
     assert_eq!(
         k.try_create_group(&name, &uri, &QUOTA, &65, &60, &0),
-        Err(Ok(Error::InvalidMaxMembers.into()))
+        Err(Ok(Error::InvalidMaxMembers))
     );
     assert_eq!(
         k.try_create_group(&name, &uri, &QUOTA, &5, &0, &0),
-        Err(Ok(Error::InvalidPeriod.into()))
+        Err(Ok(Error::InvalidPeriod))
     );
     assert_eq!(
         k.try_create_group(&name, &uri, &QUOTA, &5, &60, &1_001),
-        Err(Ok(Error::FeeTooHigh.into()))
+        Err(Ok(Error::FeeTooHigh))
     );
     let long = String::from_str(&s.e, "0123456789012345678901234567890123");
     assert_eq!(
         k.try_create_group(&long, &uri, &QUOTA, &5, &60, &0),
-        Err(Ok(Error::NameTooLong.into()))
+        Err(Ok(Error::NameTooLong))
     );
 
     assert_eq!(s.group(5), 0);
@@ -138,8 +141,8 @@ fn create_group_validates_and_is_admin_only() {
     assert_eq!(k.group_count(), 2);
     let g = k.get_group(&0);
     assert_eq!(g.status, Status::Open);
-    assert_eq!(g.next_draw_ts, 1_060);
-    assert_eq!(k.try_get_group(&9), Err(Ok(Error::GroupNotFound.into())));
+    assert_eq!(g.next_draw_ts, GENESIS + 2_999_000 + 60);
+    assert_eq!(k.try_get_group(&9), Err(Ok(Error::GroupNotFound)));
 
     // a non-admin signature is not enough
     let stranger = Address::generate(&s.e);
@@ -166,7 +169,7 @@ fn join_mints_the_nft_in_order_and_needs_kyc() {
     let outsider = Address::generate(&s.e);
     assert_eq!(
         s.kotizi.try_join_group(&id, &outsider),
-        Err(Ok(Error::NotKyc.into()))
+        Err(Ok(Error::NotKyc))
     );
 
     let (a, b) = (s.member(0), s.member(0));
@@ -194,13 +197,10 @@ fn join_rejects_a_full_group_and_unknown_group() {
     let m = s.member(0);
     s.kotizi.join_group(&id, &m);
     s.kotizi.join_group(&id, &m);
-    assert_eq!(
-        s.kotizi.try_join_group(&id, &m),
-        Err(Ok(Error::GroupFull.into()))
-    );
+    assert_eq!(s.kotizi.try_join_group(&id, &m), Err(Ok(Error::GroupFull)));
     assert_eq!(
         s.kotizi.try_join_group(&7, &m),
-        Err(Ok(Error::GroupNotFound.into()))
+        Err(Ok(Error::GroupNotFound))
     );
 }
 
@@ -219,15 +219,12 @@ fn pay_quota_moves_tokens_once_per_round() {
     assert_eq!(s.kotizi.total_paid(&id, &0), QUOTA);
 
     // double pay in the same round
-    assert_eq!(
-        s.kotizi.try_pay_quota(&id, &0),
-        Err(Ok(Error::AlreadyPaid.into()))
-    );
+    assert_eq!(s.kotizi.try_pay_quota(&id, &0), Err(Ok(Error::AlreadyPaid)));
     assert_eq!(s.usdc.balance(&m), QUOTA);
     // a cota that was never minted
     assert_eq!(
         s.kotizi.try_pay_quota(&id, &1),
-        Err(Ok(Error::CotaNotFound.into()))
+        Err(Ok(Error::CotaNotFound))
     );
 }
 
@@ -325,13 +322,20 @@ fn entries_are_kept_alive_to_the_network_maximum() {
 }
 
 // ------------------------------------------------------------------ draws and prizes
+//
+// Draws use real drand quicknet beacons (`BEACONS`): a draw requested when the ledger clock reads
+// `request_time(k)` waits for beacon `k`, and the contract verifies its BLS signature for real.
 
-fn secret(e: &Env, n: u8) -> BytesN<32> {
-    BytesN::from_array(e, &[n; 32])
+fn request_time(k: usize) -> u64 {
+    round_time(BEACONS[k].0 - DRAW_ROUND_DELAY)
 }
 
-fn commitment(e: &Env, secret: &BytesN<32>) -> BytesN<32> {
-    e.crypto().sha256(&Bytes::from(secret.clone())).to_bytes()
+fn beacon(e: &Env, k: usize) -> BytesN<96> {
+    let mut raw = [0u8; 96];
+    raw.copy_from_slice(&std::vec::Vec::from_iter(
+        (0..96).map(|i| u8::from_str_radix(&BEACONS[k].1[2 * i..2 * i + 2], 16).unwrap()),
+    ));
+    BytesN::from_array(e, &raw)
 }
 
 impl Setup<'_> {
@@ -340,6 +344,10 @@ impl Setup<'_> {
             l.sequence_number += ledgers;
             l.timestamp += secs;
         });
+    }
+
+    fn set_time(&self, ts: u64) {
+        self.e.ledger().set_timestamp(ts);
     }
 
     /// A full group of `n` members (one cota each) with plenty of funds, already past its first draw date.
@@ -359,13 +367,18 @@ impl Setup<'_> {
         }
     }
 
-    /// Commit, wait out the delay, reveal. Returns the winner's index.
-    fn draw(&self, id: u32, committer: &Address, n: u8) -> u32 {
-        let sec = secret(&self.e, n);
-        self.kotizi
-            .request_draw(&id, committer, &commitment(&self.e, &sec));
-        self.advance(COMMIT_DELAY + 1, 0);
-        self.kotizi.settle_draw(&id, &sec);
+    /// Requests the draw so that it waits for beacon `k`.
+    fn request(&self, id: u32, k: usize) {
+        self.set_time(request_time(k));
+        self.kotizi.request_draw(&id);
+        assert_eq!(self.kotizi.get_group(&id).draw_round, BEACONS[k].0);
+    }
+
+    /// Request, wait for the round, settle with its real signature. Returns the winner's index.
+    fn draw(&self, id: u32, k: usize) -> u32 {
+        self.request(id, k);
+        self.set_time(round_time(BEACONS[k].0));
+        self.kotizi.settle_draw(&id, &beacon(&self.e, k));
         self.kotizi.get_group(&id).last_winner_index
     }
 }
@@ -374,90 +387,124 @@ impl Setup<'_> {
 fn draw_cannot_be_requested_before_it_is_due_or_without_payments() {
     let s = setup();
     let id = s.group(3);
-    let keeper = Address::generate(&s.e);
-    let c = commitment(&s.e, &secret(&s.e, 1));
     let m = s.member(QUOTA);
     s.kotizi.join_group(&id, &m);
     s.kotizi.pay_quota(&id, &0);
     // paid, but the date has not come
-    assert_eq!(
-        s.kotizi.try_request_draw(&id, &keeper, &c),
-        Err(Ok(Error::DrawNotDue.into()))
-    );
+    assert_eq!(s.kotizi.try_request_draw(&id), Err(Ok(Error::DrawNotDue)));
     s.advance(1, 61);
     // due, but nobody eligible in another group
     let empty = s.group(3);
     s.advance(1, 61);
     assert_eq!(
-        s.kotizi.try_request_draw(&empty, &keeper, &c),
-        Err(Ok(Error::NoEligibleMembers.into()))
+        s.kotizi.try_request_draw(&empty),
+        Err(Ok(Error::NoEligibleMembers))
     );
     assert_eq!(s.kotizi.get_group(&empty).status, Status::Open);
-    s.kotizi.request_draw(&id, &keeper, &c);
-    assert_eq!(s.kotizi.get_group(&id).status, Status::DrawPending);
+    s.kotizi.request_draw(&id);
+    let g = s.kotizi.get_group(&id);
+    assert_eq!(g.status, Status::DrawPending);
+    // the round is in the future: DRAW_ROUND_DELAY rounds after the one running now
+    let now = s.e.ledger().timestamp();
+    assert_eq!(
+        g.draw_round,
+        (now - GENESIS) / PERIOD + 1 + DRAW_ROUND_DELAY
+    );
+    assert!(round_time(g.draw_round) > now);
 }
 
 #[test]
-fn settle_needs_the_commit_delay_the_right_secret_and_the_committer() {
+fn settle_needs_the_round_a_valid_signature_and_no_signer() {
     let s = setup();
     let (id, _) = s.full_group(3);
     s.pay_all(id, 3);
-    let keeper = Address::generate(&s.e);
-    let sec = secret(&s.e, 7);
-    s.kotizi.request_draw(&id, &keeper, &commitment(&s.e, &sec));
+    s.request(id, 0);
 
-    // same ledger as the request: too early
+    // the round has not been published yet
+    s.set_time(round_time(BEACONS[0].0) - 1);
     assert_eq!(
-        s.kotizi.try_settle_draw(&id, &sec),
-        Err(Ok(Error::DrawTooEarly.into()))
+        s.kotizi.try_settle_draw(&id, &beacon(&s.e, 0)),
+        Err(Ok(Error::DrawTooEarly))
     );
-    s.advance(COMMIT_DELAY, 0);
-    assert_eq!(
-        s.kotizi.try_settle_draw(&id, &sec),
-        Err(Ok(Error::DrawTooEarly.into()))
-    ); // sequence == commit_ledger
-    s.advance(1, 0);
+    s.set_time(round_time(BEACONS[0].0));
 
-    // wrong secret
+    // a real beacon, but of another round
     assert_eq!(
-        s.kotizi.try_settle_draw(&id, &secret(&s.e, 8)),
-        Err(Ok(Error::InvalidSecret.into()))
+        s.kotizi.try_settle_draw(&id, &beacon(&s.e, 1)),
+        Err(Ok(Error::InvalidBeacon))
     );
-    // right secret, signed by someone else
-    let other = Address::generate(&s.e);
-    s.e.set_auths(&[]);
-    s.e.mock_auths(&[MockAuth {
-        address: &other,
-        invoke: &MockAuthInvoke {
-            contract: &s.kotizi.address,
-            fn_name: "settle_draw",
-            args: (id, &sec).into_val(&s.e),
-            sub_invokes: &[],
-        },
-    }]);
-    assert!(s.kotizi.try_settle_draw(&id, &sec).is_err());
+    // not a point on the curve: the host rejects it
+    assert!(s
+        .kotizi
+        .try_settle_draw(&id, &BytesN::from_array(&s.e, &[7u8; 96]))
+        .is_err());
     assert_eq!(s.kotizi.get_group(&id).status, Status::DrawPending);
 
-    s.e.mock_all_auths();
-    s.kotizi.settle_draw(&id, &sec);
+    // anyone can settle: no authorization at all is needed
+    s.e.set_auths(&[]);
+    s.kotizi.settle_draw(&id, &beacon(&s.e, 0));
     assert_eq!(s.kotizi.get_group(&id).status, Status::Open);
 }
 
 #[test]
-fn settle_cannot_be_replayed() {
+fn settle_cannot_be_replayed_and_a_beacon_decides_only_its_own_round() {
     let s = setup();
     let (id, _) = s.full_group(3);
     s.pay_all(id, 3);
-    let keeper = Address::generate(&s.e);
-    let winner = s.draw(id, &keeper, 1);
+    let winner = s.draw(id, 0);
     let before = s.kotizi.get_group(&id);
     assert_eq!(before.round, 1);
     assert_eq!(
-        s.kotizi.try_settle_draw(&id, &secret(&s.e, 1)),
-        Err(Ok(Error::NoDrawPending.into()))
+        s.kotizi.try_settle_draw(&id, &beacon(&s.e, 0)),
+        Err(Ok(Error::NoDrawPending))
     );
     assert_eq!(s.kotizi.get_group(&id), before);
     assert_eq!(s.kotizi.get_prize(&id, &winner).unwrap().gross, QUOTA * 3);
+
+    // the next draw waits for a later beacon: the old signature does not fit it
+    s.advance(1, 61);
+    s.pay_all(id, 3);
+    s.request(id, 1);
+    s.set_time(round_time(BEACONS[1].0));
+    assert_eq!(
+        s.kotizi.try_settle_draw(&id, &beacon(&s.e, 0)),
+        Err(Ok(Error::InvalidBeacon))
+    );
+}
+
+#[test]
+fn the_winner_depends_on_the_beacon_alone() {
+    // two fresh environments with different addresses and ledger sequences, same beacon: same winner
+    let winners: std::vec::Vec<u32> = [1u32, 500]
+        .iter()
+        .map(|seq| {
+            let s = setup();
+            s.e.ledger().with_mut(|l| l.sequence_number = *seq);
+            let (id, _) = s.full_group(8);
+            s.pay_all(id, 8);
+            s.draw(id, 0)
+        })
+        .collect();
+    assert_eq!(winners[0], winners[1]);
+}
+
+#[test]
+fn groups_drawing_the_same_round_do_not_share_an_outcome() {
+    let s = setup();
+    let (a, _) = s.full_group(16);
+    let (b, _) = s.full_group(16);
+    s.pay_all(a, 16);
+    s.pay_all(b, 16);
+    s.set_time(request_time(0));
+    s.kotizi.request_draw(&a);
+    s.kotizi.request_draw(&b);
+    s.set_time(round_time(BEACONS[0].0));
+    s.kotizi.settle_draw(&a, &beacon(&s.e, 0));
+    s.kotizi.settle_draw(&b, &beacon(&s.e, 0));
+    assert_ne!(
+        s.kotizi.get_group(&a).last_winner_index,
+        s.kotizi.get_group(&b).last_winner_index
+    );
 }
 
 #[test]
@@ -465,48 +512,37 @@ fn payments_freeze_while_a_draw_is_pending() {
     let s = setup();
     let (id, _) = s.full_group(3);
     s.kotizi.pay_quota(&id, &0);
-    let keeper = Address::generate(&s.e);
-    s.kotizi
-        .request_draw(&id, &keeper, &commitment(&s.e, &secret(&s.e, 1)));
+    s.kotizi.request_draw(&id);
     assert_eq!(
         s.kotizi.try_pay_quota(&id, &1),
-        Err(Ok(Error::GroupNotOpen.into()))
+        Err(Ok(Error::GroupNotOpen))
     );
 }
 
 #[test]
-fn a_stalled_commit_can_be_replaced_only_after_it_expires() {
+fn a_stalled_draw_can_be_requested_again_only_after_it_expires() {
     let s = setup();
     let (id, _) = s.full_group(3);
     s.pay_all(id, 3);
-    let (silent, backup) = (Address::generate(&s.e), Address::generate(&s.e));
-    let old = secret(&s.e, 1);
-    s.kotizi.request_draw(&id, &silent, &commitment(&s.e, &old));
-    let commit_ledger = s.kotizi.get_group(&id).commit_ledger;
+    s.request(id, 0);
+    let expiry = round_time(BEACONS[0].0) + DRAW_EXPIRY_SECS;
 
-    let new = secret(&s.e, 2);
-    let c2 = commitment(&s.e, &new);
-    s.advance(COMMIT_EXPIRY, 0); // sequence == commit_ledger + EXPIRY - DELAY, still inside the window
+    s.set_time(expiry); // still inside the window
     assert_eq!(
-        s.kotizi.try_request_draw(&id, &backup, &c2),
-        Err(Ok(Error::DrawNotExpired.into()))
+        s.kotizi.try_request_draw(&id),
+        Err(Ok(Error::DrawNotExpired))
     );
-    s.e.ledger()
-        .with_mut(|l| l.sequence_number = commit_ledger + COMMIT_EXPIRY);
-    assert_eq!(
-        s.kotizi.try_request_draw(&id, &backup, &c2),
-        Err(Ok(Error::DrawNotExpired.into()))
-    );
-    s.advance(1, 0);
-    s.kotizi.request_draw(&id, &backup, &c2);
+    s.set_time(expiry + 1);
+    s.kotizi.request_draw(&id);
+    assert_eq!(s.kotizi.get_group(&id).draw_round, BEACONS[5].0);
 
-    // the replaced secret no longer works; the new committer settles
-    s.advance(COMMIT_DELAY + 1, 0);
+    // the old round no longer decides it; the new one does
+    s.set_time(round_time(BEACONS[5].0));
     assert_eq!(
-        s.kotizi.try_settle_draw(&id, &old),
-        Err(Ok(Error::InvalidSecret.into()))
+        s.kotizi.try_settle_draw(&id, &beacon(&s.e, 0)),
+        Err(Ok(Error::InvalidBeacon))
     );
-    s.kotizi.settle_draw(&id, &new);
+    s.kotizi.settle_draw(&id, &beacon(&s.e, 5));
     assert_eq!(s.kotizi.get_group(&id).round, 1);
 }
 
@@ -514,22 +550,21 @@ fn a_stalled_commit_can_be_replaced_only_after_it_expires() {
 fn only_paying_cotas_can_win_and_a_cota_wins_once() {
     let s = setup();
     let (id, _) = s.full_group(3);
-    let keeper = Address::generate(&s.e);
     s.kotizi.pay_quota(&id, &1); // only cota 1 paid
-    assert_eq!(s.draw(id, &keeper, 1), 1);
+    assert_eq!(s.draw(id, 0), 1);
     assert_eq!(s.kotizi.get_prize(&id, &1).unwrap().gross, QUOTA);
 
     // round 2: cota 1 pays again but has already won, so nobody is eligible
     s.advance(1, 61);
     s.kotizi.pay_quota(&id, &1);
-    let c = commitment(&s.e, &secret(&s.e, 2));
+    s.set_time(request_time(1));
     assert_eq!(
-        s.kotizi.try_request_draw(&id, &keeper, &c),
-        Err(Ok(Error::NoEligibleMembers.into()))
+        s.kotizi.try_request_draw(&id),
+        Err(Ok(Error::NoEligibleMembers))
     );
     // once another cota pays, the draw proceeds and it is the only candidate
     s.kotizi.pay_quota(&id, &2);
-    assert_eq!(s.draw(id, &keeper, 2), 2);
+    assert_eq!(s.draw(id, 1), 2);
     assert_eq!(s.kotizi.get_prize(&id, &2).unwrap().gross, QUOTA * 2);
 }
 
@@ -537,11 +572,10 @@ fn only_paying_cotas_can_win_and_a_cota_wins_once() {
 fn full_group_runs_to_completion_and_every_prize_is_paid_out() {
     let s = setup();
     let (id, members) = s.full_group(3);
-    let keeper = Address::generate(&s.e);
     let mut winners = std::vec::Vec::new();
     for round in 0..3u32 {
         s.pay_all(id, 3);
-        winners.push(s.draw(id, &keeper, round as u8 + 1));
+        winners.push(s.draw(id, round as usize));
         s.advance(1, 61);
     }
     winners.sort();
@@ -555,14 +589,10 @@ fn full_group_runs_to_completion_and_every_prize_is_paid_out() {
     assert_eq!(g.vault, QUOTA * 9);
 
     // completed: no more draws, no more payments
-    let c = commitment(&s.e, &secret(&s.e, 9));
-    assert_eq!(
-        s.kotizi.try_request_draw(&id, &keeper, &c),
-        Err(Ok(Error::GroupNotOpen.into()))
-    );
+    assert_eq!(s.kotizi.try_request_draw(&id), Err(Ok(Error::GroupNotOpen)));
     assert_eq!(
         s.kotizi.try_pay_quota(&id, &0),
-        Err(Ok(Error::GroupNotOpen.into()))
+        Err(Ok(Error::GroupNotOpen))
     );
 
     // claims after completion; fee is 2% of each 3 x QUOTA prize
@@ -582,12 +612,11 @@ fn full_group_runs_to_completion_and_every_prize_is_paid_out() {
 fn an_unclaimed_prize_never_blocks_the_next_draw() {
     let s = setup();
     let (id, _) = s.full_group(3);
-    let keeper = Address::generate(&s.e);
     s.pay_all(id, 3);
-    let first = s.draw(id, &keeper, 1);
+    let first = s.draw(id, 0);
     s.advance(1, 61);
     s.pay_all(id, 3);
-    let second = s.draw(id, &keeper, 2);
+    let second = s.draw(id, 1);
     assert_ne!(first, second);
     let g = s.kotizi.get_group(&id);
     assert_eq!(g.unclaimed_total, QUOTA * 6);
@@ -613,22 +642,18 @@ fn an_unclaimed_prize_never_blocks_the_next_draw() {
 fn claim_rules_non_winner_double_claim_and_owner_only() {
     let s = setup();
     let (id, members) = s.full_group(3);
-    let keeper = Address::generate(&s.e);
     // nobody has won yet
-    assert_eq!(
-        s.kotizi.try_claim_prize(&id, &0),
-        Err(Ok(Error::NotWinner.into()))
-    );
+    assert_eq!(s.kotizi.try_claim_prize(&id, &0), Err(Ok(Error::NotWinner)));
     assert_eq!(
         s.kotizi.try_claim_prize(&id, &9),
-        Err(Ok(Error::CotaNotFound.into()))
+        Err(Ok(Error::CotaNotFound))
     );
     s.pay_all(id, 3);
-    let w = s.draw(id, &keeper, 1);
+    let w = s.draw(id, 0);
     let loser = (w + 1) % 3;
     assert_eq!(
         s.kotizi.try_claim_prize(&id, &loser),
-        Err(Ok(Error::NotWinner.into()))
+        Err(Ok(Error::NotWinner))
     );
 
     // signed by someone who does not own the winning cota: rejected, nothing moves
@@ -656,7 +681,7 @@ fn claim_rules_non_winner_double_claim_and_owner_only() {
     assert_eq!(s.usdc.balance(&buyer), QUOTA * 3 - fee);
     assert_eq!(
         s.kotizi.try_claim_prize(&id, &w),
-        Err(Ok(Error::AlreadyClaimed.into()))
+        Err(Ok(Error::AlreadyClaimed))
     );
     assert_eq!(s.usdc.balance(&buyer), QUOTA * 3 - fee);
 }
@@ -668,19 +693,18 @@ fn draws_on_a_partial_group_wait_for_new_joiners() {
     let m = s.member(QUOTA * 10);
     s.kotizi.join_group(&id, &m);
     s.advance(1, 61);
-    let keeper = Address::generate(&s.e);
     s.kotizi.pay_quota(&id, &0);
-    assert_eq!(s.draw(id, &keeper, 1), 0);
+    assert_eq!(s.draw(id, 0), 0);
     s.advance(1, 61);
     s.kotizi.pay_quota(&id, &0);
-    let c = commitment(&s.e, &secret(&s.e, 2));
+    s.set_time(request_time(1));
     assert_eq!(
-        s.kotizi.try_request_draw(&id, &keeper, &c),
-        Err(Ok(Error::NoEligibleMembers.into()))
+        s.kotizi.try_request_draw(&id),
+        Err(Ok(Error::NoEligibleMembers))
     );
     // a new member joins, pays, and the draw moves again
     let late = s.member(QUOTA);
     assert_eq!(s.kotizi.join_group(&id, &late), 1);
     s.kotizi.pay_quota(&id, &1);
-    assert_eq!(s.draw(id, &keeper, 2), 1);
+    assert_eq!(s.draw(id, 1), 1);
 }

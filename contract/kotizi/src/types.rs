@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, BytesN, String};
+use soroban_sdk::{contracttype, Address, String};
 
 pub const MIN_MEMBERS: u32 = 2;
 pub const MAX_MEMBERS: u32 = 64;
@@ -7,10 +7,12 @@ pub const MAX_NAME_LEN: u32 = 32;
 pub const MAX_URI_LEN: u32 = 200;
 pub const TOKEN_DECIMALS: u32 = 6;
 /// Group ids share the NFT token id (`u32`) with the cota index: `(group_id << 8) | index`.
-/// `settle_draw` needs `sequence > commit_ledger`, with `commit_ledger = sequence_at_request + COMMIT_DELAY`.
-pub const COMMIT_DELAY: u32 = 3;
-/// A pending draw may be requested again once `sequence > commit_ledger + COMMIT_EXPIRY` (~1 h at 5 s/ledger).
-pub const COMMIT_EXPIRY: u32 = 720;
+/// A draw waits for the drand round `DRAW_ROUND_DELAY` rounds (30 s) after the one running when it was
+/// requested, which absorbs the skew between ledger close time and drand's clock.
+pub const DRAW_ROUND_DELAY: u64 = 10;
+/// A pending draw may be requested again once its round is this many seconds old without a settlement
+/// (drand being down is the only way that happens).
+pub const DRAW_EXPIRY_SECS: u64 = 3_600;
 pub const BPS_DENOMINATOR: i128 = 10_000;
 pub const MAX_GROUP_ID: u32 = (1 << 24) - 1;
 
@@ -68,10 +70,8 @@ pub struct Group {
     /// This group's share of the contract's token balance; always at least `unclaimed_total`.
     pub vault: i128,
     pub last_winner_index: u32,
-    // Draw commit data (task 4).
-    pub commitment: BytesN<32>,
-    pub commit_ledger: u32,
-    pub committer: Option<Address>,
+    /// The drand round that decides the pending draw (0 when none is pending).
+    pub draw_round: u64,
 }
 
 #[contracttype]

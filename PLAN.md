@@ -16,11 +16,11 @@ Toolchain: Rust stable with the `wasm32v1-none` target, `soroban-sdk` **28.0.0**
 These are where Stellar's real constraints disagree with `KICKOFF_PROMPT.md`. Marked **[DEVIATION]** below; strike or
 amend as you did in the reference plan.
 
-1. **[DEVIATION, approved 2026-10-25: commit-reveal with keeper secret] The randomness pattern in the kickoff does not exist on Soroban.** A contract cannot read any ledger hash:
+1. **[DEVIATION, approved 2026-10-25 as commit-reveal; superseded on `feat/drand-randomness` by on-chain drand verification] The randomness pattern in the kickoff does not exist on Soroban.** A contract cannot read any ledger hash:
    `Ledger` exposes only `sequence()`, `timestamp()`, `network_id()` (and a deprecated `protocol_version()`), verified in the
    soroban-sdk docs. "Commit to a future ledger, reveal by reading its hash" has no source for the hash. `env.prng()` exists but
    the SDK marks it "unsuitable for generating secrets or use in applications with low risk tolerance". See *Randomness* for
-   the replacement I propose (keeper-secret commit-reveal mixed with `prng`). `request_draw`/`settle_draw` stay as the stable
+   the replacement (drand beacon verified in the contract). `request_draw`/`settle_draw` stay as the stable
    names, but their arguments change.
 2. **[DEVIATION, approved 2026-10-25] Gasless via Soroban auth entries instead of a fee-bump of a user-signed transaction.** Fee-bump
    works, but it forces the user's account to be the inner transaction source (sequence numbers, user signs the envelope).
@@ -46,7 +46,7 @@ amend as you did in the reference plan.
 
 ## Scope
 
-In: KYC attestation, groups, join (mints membership NFT), pay quota, verifiable-ish draw (commit-reveal), claim prize,
+In: KYC attestation, groups, join (mints membership NFT), pay quota, verifiable draw (drand beacon checked on-chain), claim prize,
 demo seed script, gasless relay, backend keeper.
 Out (same as reference): marketplace/resale, offers/bidding, default/penalty handling, real KYC provider, IPFS.
 The prize is paid in test USDC from the collected pool; "real estate" is narrative.
@@ -71,7 +71,7 @@ Storage keys (`#[contracttype] enum DataKey`), one entry per key, never an array
 `Group`: name, uri, quota `i128`, period `u64`, next_draw_ts `u64`, admin_fee_bps `u32`, max_members `u32` (2..=64),
 members_joined, round, status (`Open | DrawPending | Completed`), `paid_bitmap: u64`, `won_bitmap: u64`,
 `unclaimed_bitmap: u64`, `unclaimed_total: i128`, `vault: i128` (this group's share of the contract's token balance),
-last_winner_index, draw commit data (`commitment: BytesN<32>`, `commit_ledger: u32`, `committer: Address`).
+last_winner_index, `draw_round: u64` (the drand round that decides the pending draw, 0 when none).
 `group_id` is `u32` and must stay below 2^24 so it fits the NFT token id.
 
 Why per-index `Prize`/`Paid` entries: Soroban meters the read/write footprint per invocation. `settle_draw` touches
@@ -123,8 +123,8 @@ function runs; simulation fills that list, the transaction pays. A restored entr
 | 3 | `create_group(name, uri, quota, max_members, period, admin_fee_bps)` | `admin` | fee <= 10%, name <= 32 bytes, uri <= 200 bytes, quota > 0, period > 0 |
 | 4 | `join_group(group_id, member)` | `member` | needs `Kyc(member)`; index = members_joined; not full; mints the NFT to `member` |
 | 5 | `pay_quota(group_id, index)` | current NFT owner | status Open; one payment per round; pulls `quota` from the owner with `token.transfer`; verifies the contract's balance rose by exactly `quota` (rejects fee-on-transfer tokens) |
-| 6 | `request_draw(group_id, committer, commitment)` | `committer` | after `next_draw_ts`; >= 1 eligible; status -> DrawPending; stores commitment + `commit_ledger = sequence + COMMIT_DELAY`. Re-callable once `sequence > commit_ledger + COMMIT_EXPIRY` |
-| 7 | `settle_draw(group_id, secret)` | the stored `committer` | `sha256(secret) == commitment`, `sequence > commit_ledger`; picks winner, writes `Prize`, round += 1, clears paid_bitmap, `next_draw_ts = now + period` |
+| 6 | `request_draw(group_id)` | none (permissionless) | after `next_draw_ts`; >= 1 eligible; status -> DrawPending; stores `draw_round` (a drand round 10 rounds ahead). Re-callable once `timestamp > round_time(draw_round) + DRAW_EXPIRY_SECS` |
+| 7 | `settle_draw(group_id, signature)` | none (permissionless; the BLS check is the authorization) | `timestamp >= round_time(draw_round)`, valid quicknet signature of `draw_round`; picks winner, writes `Prize`, round += 1, clears paid_bitmap, `next_draw_ts = now + period` |
 | 8 | `claim_prize(group_id, index)` | current NFT owner | cota must have won and not claimed; any round, any time; pays `gross - fee` to owner and `fee` to admin; once only |
 | - | views | - | `get_group`, `get_prize`, `cota_owners(group_id)` (bulk), `is_kyc`, `group_count`, `config`, plus the OZ NFT views |
 
@@ -135,28 +135,35 @@ Events (`env.events().publish`): `kyc_approved`, `group_created`, `member_joined
 `draw_settled`, `prize_claimed`. Note Soroban RPC keeps events only a limited window, so the app never depends on them for
 state; reads come from contract views.
 
-## Randomness  **[DEVIATION from KICKOFF "Randomness"]**
+## Randomness  **[DEVIATION from KICKOFF "Randomness", branch `feat/drand-randomness`]**
 
-Constraint: no ledger hash readable in a contract; `env.prng()` is explicitly not for low-risk-tolerance use; nothing in the
-protocol gives a VRF we can rely on.
+Constraint: no ledger hash readable in a contract; `env.prng()` is explicitly not for low-risk-tolerance use. The kickoff's
+"commit to a future ledger's hash" therefore has no source on Soroban. The first design (keeper-secret commit-reveal, approved
+2026-10-25) let the keeper simulate `settle_draw` and withhold or retry until it liked the winner. Replaced by:
 
-Proposal: **commit-reveal with a keeper secret, mixed with the contract PRNG at settle**.
+**drand quicknet, verified inside the contract.** Soroban has BLS12-381 host functions (pairing check, hash-to-G1), so the
+contract checks a drand beacon signature itself. quicknet (`52db9ba7...e971`, scheme `bls-unchained-g1-rfc9380`, period 3 s,
+genesis 1692803367) signs `sha256(round as 8 big-endian bytes)` with a threshold key held by the League of Entropy.
 
-- `request_draw`: the committer (normally the backend keeper) submits `commitment = sha256(secret)`. The set of eligible
-  cotas is frozen at that moment (`pay_quota` requires status Open), so the keeper cannot pick a winner *after* seeing
-  something it didn't know when committing... except it knows the eligible set, so see the weakness below.
-- `settle_draw`: reveals `secret`. `random = sha256(secret || group_id || round || prng_u64)` where `prng_u64` is drawn from
-  `env.prng()` during the settle transaction, which the keeper does not know at commit time. Winner picked from `random`.
-- Weaknesses, accepted for a **testnet demo, not for real money** (carry `TODO(vrf)` in the code):
-  - Withholding: the committer knows `secret` and can simulate `settle_draw` first and refuse to submit if it dislikes the
-    result; the cost is waiting out `COMMIT_EXPIRY` and re-committing, so the bias is bounded by retries, not free.
-  - If the keeper alone chose its secret with the `prng` term removed it would control the outcome completely; the `prng`
-    term is what prevents that. How strongly `env.prng()` can be steered by a transaction submitter is **unverified** and I
-    will test it in the sandbox before relying on it. If it can be steered trivially the draw degrades to "trusted keeper".
-  - Only the committer can settle (no one else knows the secret). A silent keeper stalls a group until someone else re-commits
-    after expiry. Anyone may re-commit then, so the admin can always run a backup keeper.
-- Out of scope: chasing a VRF. `request_draw`/`settle_draw` are the stable seam; swapping the internals later is local to one
-  module (`randomness.rs`), the same as in the reference repo.
+- `request_draw(group_id)`: no signature needed. Freezes payments and the eligible set and stores
+  `draw_round = floor((now - GENESIS) / 3) + 1 + DRAW_ROUND_DELAY` (10 rounds, 30 s ahead: a round that does not exist yet,
+  with margin for the skew between ledger close time and drand's clock). A pending draw can be requested again (new round) once
+  its round is `DRAW_EXPIRY_SECS` (1 h) old, so drand being down cannot lock a group.
+- `settle_draw(group_id, signature)`: anyone may send it. Needs `timestamp >= round_time(draw_round)`, then verifies
+  `e(signature, -g2) * e(H(sha256(round)), pk) == 1` against the pinned quicknet key. `random = sha256(signature || group_id)`;
+  winner = k-th set bit of `paid & !won` (`draw_lib.rs`, unchanged). The host rejects off-curve and out-of-subgroup points.
+- The host only takes uncompressed points, so the backend decompresses the signature drand serves (and verifies it locally
+  first, so a lying relay can only cause a refusal).
+- Cost measured in the test environment: `settle_draw` with verification ~27.7M CPU instructions (~7% of the 400M limit).
+- Why this closes the gap: the round is fixed at request time, its signature is unique, nobody can know it earlier (the keeper
+  included), and once published anyone can settle, so withholding does not help. No stored secrets, no `prng`.
+- Residual trust: the drand threshold network must not collude (unbiasable otherwise), and the key hardcoded in
+  `drand.rs` must be the real quicknet key (cross-checked against `api.drand.sh/<chain>/info` and a real beacon in the tests).
+  A group's eligible set is public and fixed before the round exists; the group admin who creates the contract is still trusted
+  for everything else.
+- The verification is tested with real beacons (`test_beacons.rs`, 6 rounds): wrong round, wrong DST/message, missing negation,
+  disabled verification and early settle are each caught by a test (mutation-checked).
+- Seam: `request_draw`/`settle_draw` stay the interface; swapping the source later is local to `drand.rs` and `settle_draw`.
 
 Winner derivation lives in a pure function (`draw_lib.rs`: popcount, nth set bit, `pick_winner`) with its own unit tests.
 
@@ -173,8 +180,8 @@ App                          Privy wallet (raw sign)             API (sponsor ke
 Allowlist: only this contract's id and `join_group`, `pay_quota`, `claim_prize`; no other contract, no
 `InvokeHostFunction` of other kinds, no classic operations from user input. Per-user daily limit and sponsor balance reserve as
 in the reference `relay/budget.ts`. The sponsor never appears as `member`/`owner`.
-`request_draw`/`settle_draw` are not relayed: the keeper sends them with its committer key (own key, separate from the sponsor
-key). `approve_kyc` and faucet mints use their own keys, as in the reference (three-plus separate server keys, files now).
+`request_draw`/`settle_draw` are not relayed: they need no signature, so the keeper sends them with its own key (separate from
+the sponsor key) and pays the fees. `approve_kyc` and faucet mints use their own keys, as in the reference (three-plus separate server keys, files now).
 
 Account activation (risk 3): onboarding also submits a sponsor-paid `CreateAccount` for the wallet if it has no ledger entry.
 
@@ -191,9 +198,8 @@ Routes: `/v1/config`, `/v1/groups`, `/v1/groups/:id`, `/v1/groups/:id/members`, 
 `/v1/tx/prepare` + `/v1/tx/relay`, `/v1/groups/:id/draw`. Chain reads go through Soroban RPC simulation of the view functions
 and `getLedgerEntries` (no `getProgramAccounts` equivalent: groups are enumerated by `group_count` then `get_group(i)`), with the
 3-second cache of the reference. DB (Drizzle, already stripped): `sponsored_tx`, `kyc_approvals`, `faucet_claims`, no per-chain
-namespacing. Keeper: poll due groups, `request_draw` with a fresh secret kept in memory/DB until revealed, `settle_draw` when
-`sequence > commit_ledger`; re-commit after expiry. The keeper's pending secret must survive a restart (stored encrypted-at-rest
-or in the DB for the demo; flagged in the risk notes).
+namespacing. Keeper: poll due groups, `request_draw`; once the drand round exists, fetch and verify its signature, decompress it and
+`settle_draw`; request again after expiry. Stateless: no secrets, nothing to lose on a restart.
 
 ## Frontend (task 6)
 
@@ -203,10 +209,10 @@ until frozen. The mock keeps working in the meantime.
 
 ## Security checklist (every function)
 
-`require_auth` on every authority (and the *right* address: NFT owner for pay/claim, committer for settle); checked arithmetic on
+`require_auth` on every authority (and the *right* address: NFT owner for pay/claim; `request_draw`/`settle_draw` take no signer on purpose); checked arithmetic on
 every `i128`/`u32`; Soroban forbids contract re-entry by default, and state is still written before the token transfer; token
 calls go only to the configured token address; pay-in balance delta verified; no double pay/claim/settle; draw cannot be
-settled before `commit_ledger` or without the matching secret, nor replayed (winner derivation binds group and round);
+settled before its drand round exists or without that round's valid signature, nor replayed (the winner binds the group and the beacon is per round);
 `vault >= unclaimed_total + pool` before recording a prize; recipient-KYC on NFT transfer; TTL extended on every touched entry;
 negative tests for each.
 
@@ -217,7 +223,7 @@ Known and accepted: no KYC revocation; a winner who never claims only strands th
 | Task | Output | Done when |
 |---|---|---|
 | 3 | KYC, `create_group`, `join_group` (+NFT), `pay_quota`, test token | tests incl. no-KYC, double pay, full group, wrong token, wrong signer. Verify the OZ NFT API first (decision 6). |
-| 4 | `request_draw`, `settle_draw`, `claim_prize` | tests: early draw, none eligible, early/replayed settle, wrong secret, non-committer, non-winner/double claim, full completion. Sandbox test of `prng` steerability. |
+| 4 | `request_draw`, `settle_draw`, `claim_prize` | tests: early draw, none eligible, early/replayed settle, wrong or other-round beacon, permissionless settle, non-winner/double claim, full completion. |
 | 5 | backend wired; account activation; prepare/relay; keeper | one real sponsored join + pay on testnet (asks you before deploy/funding) |
 | 6 | bindings, client, Privy raw-sign | real login + join from the browser |
 | 7 | seed script | test token, N keypairs, KYC, group, join + pay all (asks before running on testnet) |

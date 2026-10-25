@@ -33,6 +33,8 @@ const schema = z.object({
   RELAY_AUTH_LEDGERS: z.coerce.number().int().positive().default(120),
 
   KEEPER_ENABLED: bool.default(false),
+  /** drand HTTP relay serving the quicknet chain (verified locally, so the relay is not trusted). */
+  DRAND_URL: z.string().url().default('https://api.drand.sh'),
   KEEPER_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
 
   METADATA_IMAGE_URL: z.string().default('https://example.com/kotizi/cota.png'),

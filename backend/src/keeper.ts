@@ -1,37 +1,36 @@
-import { createHash, randomBytes } from 'node:crypto';
-import { eq } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Deps } from './deps.js';
+import { roundTime } from './drand.js';
 import { schema } from './db/index.js';
 import { GroupStatus, type RawGroup } from './stellar/chain.js';
 import { StellarTxError } from './stellar/errors.js';
-import { addr, bytes32, invokeFunc, u32 } from './stellar/invoke.js';
+import { invokeFunc, u32 } from './stellar/invoke.js';
 import { withAccountLock } from './stellar/lock.js';
+import { nativeToScVal } from '@stellar/stellar-sdk';
 
-/** Mirrors contract COMMIT_EXPIRY: a pending draw may be requested again past `commit_ledger + 720`. */
-export const COMMIT_EXPIRY = 720;
+/** Mirrors contract DRAW_EXPIRY_SECS: a pending draw may be requested again once its round is this old. */
+export const DRAW_EXPIRY_SECS = 3_600n;
+/** Seconds past the round's publication before settling: ledger close times trail the wall clock a little. */
+export const SETTLE_SLACK_SECS = 6n;
 
 export type Step = 'request' | 'settle';
 export type IdleReason = 'completed' | 'not_due' | 'no_eligible_cotas' | 'waiting_for_randomness';
 
-export type KeeperView = Pick<RawGroup, 'status' | 'nextDrawTs' | 'paidBitmap' | 'wonBitmap' | 'commitLedger' | 'committer'>;
+export type KeeperView = Pick<RawGroup, 'status' | 'nextDrawTs' | 'paidBitmap' | 'wonBitmap' | 'drawRound'>;
 
 /**
- * What a group needs next. A pending draw is settled by whoever committed to it (only they know the
- * secret), so the keeper settles its own commits and, if the commit expired (or was somebody else's
- * and went silent), requests again.
+ * What a group needs next. Anyone can send both steps (the contract verifies the drand signature
+ * itself), so the keeper only drives them: request when due, settle once the drand round exists, and
+ * request again if the round went unsettled for too long (drand down).
  */
-export function nextStep(
-  g: KeeperView,
-  ctx: { nowSecs: bigint; ledger: number; keeper: string; haveSecret: boolean },
-): Step | null {
+export function nextStep(g: KeeperView, ctx: { nowSecs: bigint }): Step | null {
   if (g.status === GroupStatus.Completed) return null;
   if (g.status === GroupStatus.Open) {
     return ctx.nowSecs >= g.nextDrawTs && (g.paidBitmap & ~g.wonBitmap) !== 0n ? 'request' : null;
   }
-  if (ctx.ledger > g.commitLedger + COMMIT_EXPIRY) return 'request';
-  if (g.committer === ctx.keeper && ctx.haveSecret && ctx.ledger > g.commitLedger) return 'settle';
-  return null;
+  const published = roundTime(g.drawRound);
+  if (ctx.nowSecs > published + DRAW_EXPIRY_SECS) return 'request';
+  return ctx.nowSecs >= published + SETTLE_SLACK_SECS ? 'settle' : null;
 }
 
 /** Why a group has nothing to do right now (when `nextStep` returned null). */
@@ -45,10 +44,9 @@ export function idleReason(g: KeeperView, nowSecs: bigint): IdleReason {
 export type KeeperAction = { group: number; action: Step; txHash?: string; error?: string };
 
 /**
- * Drives draws forward so nobody has to click. Commit (`request_draw`) and reveal (`settle_draw`) are
- * sent by the keeper key, which pays its own fees. Claiming stays with the winner (the NFT owner).
- *
- * TODO(vrf): the keeper knows the secret, so it knows the outcome before revealing (see PLAN.md, Randomness).
+ * Drives draws forward so nobody has to click: `request_draw` when due, then `settle_draw` with the
+ * drand beacon of the round the contract fixed. The keeper has no say in the outcome and holds no secret
+ * (see PLAN.md, Randomness); it only pays the fees. Claiming stays with the winner (the NFT owner).
  */
 export class Keeper {
   private timer: NodeJS.Timeout | undefined;
@@ -95,17 +93,20 @@ export class Keeper {
   }
 
   private async step(g: RawGroup, userId = 'keeper'): Promise<KeeperAction | null> {
-    const { chain, keeper } = this.deps;
-    const secret = g.status === GroupStatus.DrawPending ? await this.secretFor(g.commitment) : undefined;
-    const step = nextStep(g, {
-      nowSecs: BigInt(Math.floor(Date.now() / 1000)),
-      ledger: await chain.ledger(),
-      keeper: keeper.publicKey(),
-      haveSecret: secret !== undefined,
-    });
+    const { keeper } = this.deps;
+    const step = nextStep(g, { nowSecs: BigInt(Math.floor(Date.now() / 1000)) });
     if (!step) return null;
     try {
-      const txHash = step === 'request' ? await this.request(g) : await this.settle(g, secret!);
+      let txHash: string;
+      if (step === 'request') {
+        txHash = await this.send(invokeFunc(this.deps.chain.contractId, 'request_draw', [u32(g.id)]));
+      } else {
+        const signature = await this.deps.beacons.signature(g.drawRound);
+        if (!signature) return null; // not published yet
+        txHash = await this.send(
+          invokeFunc(this.deps.chain.contractId, 'settle_draw', [u32(g.id), nativeToScVal(Buffer.from(signature), { type: 'bytes' })]),
+        );
+      }
       await this.deps.db.insert(schema.sponsoredTx).values({
         userId,
         wallet: keeper.publicKey(),
@@ -122,28 +123,7 @@ export class Keeper {
     }
   }
 
-  private async secretFor(commitmentHex: string): Promise<string | undefined> {
-    const [row] = await this.deps.db.select().from(schema.drawSecrets).where(eq(schema.drawSecrets.commitment, commitmentHex)).limit(1);
-    return row?.secret;
-  }
-
-  /** Stores the secret before the commit is sent: a crash in between must not lose the ability to reveal. */
-  private async request(g: RawGroup): Promise<string> {
-    const { chain, keeper, db } = this.deps;
-    const secret = randomBytes(32);
-    const commitment = createHash('sha256').update(secret).digest('hex');
-    await db.insert(schema.drawSecrets).values({ commitment, groupId: g.id, secret: secret.toString('hex') });
-    return this.send(invokeFunc(chain.contractId, 'request_draw', [u32(g.id), addr(keeper.publicKey()), bytes32(commitment)]));
-  }
-
-  private async settle(g: RawGroup, secretHex: string): Promise<string> {
-    const { chain } = this.deps;
-    const txHash = await this.send(invokeFunc(chain.contractId, 'settle_draw', [u32(g.id), bytes32(secretHex)]));
-    await this.deps.db.delete(schema.drawSecrets).where(eq(schema.drawSecrets.commitment, g.commitment));
-    return txHash;
-  }
-
-  /** The keeper account is the transaction source, so its signature also authorizes the call. */
+  /** The keeper account is the transaction source and pays the fee; the calls need no authorization. */
   private async send(func: Parameters<Deps['chain']['invokeTx']>[1]): Promise<string> {
     const { chain, keeper } = this.deps;
     return withAccountLock(keeper.publicKey(), async () => {

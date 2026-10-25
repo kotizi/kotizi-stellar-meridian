@@ -60,10 +60,11 @@ A wallet needs a ledger account before it can authorize anything; `POST /v1/kyc`
 
 ## Draw keeper
 
-Commit-reveal (PLAN.md, "Randomness"): the keeper commits `sha256(secret)`, waits for the commit ledger, reveals.
-The secret is stored in `draw_secrets` **in clear** until revealed (testnet demo): whoever reads that table can
-predict a pending draw. A pending draw whose commit expired (720 ledgers) is committed again.
-`TODO(vrf)` stays in the code.
+drand (PLAN.md, "Randomness"): `request_draw` makes the contract fix a future drand quicknet round; once that round
+exists the keeper fetches its signature from `DRAND_URL`, checks it locally against the pinned quicknet key, decompresses
+it to the 96-byte form the Soroban host takes and sends `settle_draw`. The keeper holds no secret and cannot influence the
+winner; anyone could send the same transaction. If a round goes unsettled for an hour (drand down) the draw is requested
+again with a new round.
 
 ## Not done yet
 

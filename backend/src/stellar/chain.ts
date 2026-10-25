@@ -22,9 +22,8 @@ export type RawGroup = {
   unclaimedTotal: bigint;
   vault: bigint;
   lastWinnerIndex: number;
-  commitment: string; // hex
-  commitLedger: number;
-  committer: string | null;
+  /** The drand round that decides the pending draw (0n when none is pending). */
+  drawRound: bigint;
 };
 
 export type RawWinner = { index: number; gross: bigint; wonRound: number };

@@ -34,8 +34,8 @@ export function toGroupView(
     round: g.round,
     nextDrawTs: g.nextDrawTs.toString(),
     status: STATUS[g.status as keyof typeof STATUS] ?? 'Open',
-    drawSource: 'ledgerHash' as const,
-    commitLedger: String(g.commitLedger),
+    drawSource: 'drand' as const,
+    drawRound: String(g.drawRound),
     lastWinnerIndex: g.lastWinnerIndex,
     winners: winners.map((w) => ({
       index: w.index,

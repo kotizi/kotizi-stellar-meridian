@@ -37,9 +37,7 @@ export function group(over: Partial<RawGroup> = {}): RawGroup {
     unclaimedTotal: 0n,
     vault: 0n,
     lastWinnerIndex: 0,
-    commitment: '00'.repeat(32),
-    commitLedger: 0,
-    committer: null,
+    drawRound: 0n,
     ...over,
   };
 }

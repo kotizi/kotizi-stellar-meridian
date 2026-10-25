@@ -26,7 +26,7 @@ pub enum Error {
     DrawNotExpired = 20,
     NoDrawPending = 21,
     DrawTooEarly = 22,
-    InvalidSecret = 23,
+    InvalidBeacon = 23,
     InsufficientVault = 24,
     NotWinner = 25,
     AlreadyClaimed = 26,

@@ -5,11 +5,23 @@ import { DevAuthenticator } from '../src/auth/dev.js';
 import { loadConfig } from '../src/config.js';
 import { openDb } from '../src/db/index.js';
 import type { Deps } from '../src/deps.js';
+import type { Beacons } from '../src/drand.js';
 import { CONTRACT, FakeChain, newKey } from './fake-chain.js';
+
+/** Beacons the test publishes: rounds not in the map are "not published yet". */
+export class FakeBeacons implements Beacons {
+  published = new Map<bigint, Uint8Array>();
+  requested: bigint[] = [];
+  async signature(round: bigint) {
+    this.requested.push(round);
+    return this.published.get(round) ?? null;
+  }
+}
 
 export type Harness = {
   app: FastifyInstance;
   chain: FakeChain;
+  beacons: FakeBeacons;
   deps: Deps;
   sponsor: Keypair;
   keeper: Keypair;
@@ -20,6 +32,7 @@ export type Harness = {
 
 export async function harness(env: Record<string, string> = {}): Promise<Harness> {
   const chain = new FakeChain();
+  const beacons = new FakeBeacons();
   const [sponsor, keeper, kyc, mint] = [newKey(), newKey(), newKey(), newKey()];
   chain.kycAuthority = kyc.publicKey();
   const config = loadConfig({
@@ -34,9 +47,9 @@ export async function harness(env: Record<string, string> = {}): Promise<Harness
     ...env,
   });
   const { db, close } = await openDb({ dir: 'memory://' });
-  const deps: Deps = { config, db, auth: new DevAuthenticator(), chain, sponsor, keeper, kycSigner: kyc, mintSigner: mint };
+  const deps: Deps = { config, db, auth: new DevAuthenticator(), chain, beacons, sponsor, keeper, kycSigner: kyc, mintSigner: mint };
   const app = await buildApp(deps, { logger: false });
-  return { app, chain, deps, sponsor, keeper, kyc, mint, close: async () => (await app.close(), close()) };
+  return { app, chain, beacons, deps, sponsor, keeper, kyc, mint, close: async () => (await app.close(), close()) };
 }
 
 export const bearer = (...wallets: string[]) => ({ authorization: `Bearer dev:${wallets.join(',')}` });

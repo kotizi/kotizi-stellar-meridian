@@ -1,0 +1,1 @@
+DROP TABLE "draw_secrets" CASCADE;

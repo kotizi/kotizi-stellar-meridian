@@ -2,6 +2,7 @@ import type { Keypair } from '@stellar/stellar-sdk';
 import type { AuthUser, Authenticator } from './auth/index.js';
 import type { Config } from './config.js';
 import type { Db } from './db/index.js';
+import type { Beacons } from './drand.js';
 import type { Keeper } from './keeper.js';
 import type { Chain } from './stellar/chain.js';
 
@@ -12,7 +13,9 @@ export type Deps = {
   chain: Chain;
   /** Transaction source and fee payer of relayed calls; pays account activation. */
   sponsor: Keypair;
-  /** Signs request_draw / settle_draw. May be the same key as the sponsor. */
+  /** drand beacons for settle_draw. */
+  beacons: Beacons;
+  /** Signs request_draw / settle_draw (anyone could; the keeper pays the fees). May be the sponsor key. */
   keeper: Keypair;
   /** Signs approve_kyc (must be the contract's kyc_authority). Only when KYC_MODE=auto. */
   kycSigner?: Keypair;

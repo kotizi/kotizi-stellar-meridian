@@ -216,8 +216,6 @@ function toRawGroup(id: number, g: Native): RawGroup {
     unclaimedTotal: BigInt(g.unclaimed_total as bigint),
     vault: BigInt(g.vault as bigint),
     lastWinnerIndex: Number(g.last_winner_index),
-    commitment: Buffer.from(g.commitment as Uint8Array).toString('hex'),
-    commitLedger: Number(g.commit_ledger),
-    committer: g.committer ? String(g.committer) : null,
+    drawRound: BigInt(g.draw_round as bigint),
   };
 }

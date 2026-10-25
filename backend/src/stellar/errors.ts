@@ -22,7 +22,7 @@ export const CONTRACT_ERRORS: Record<number, string> = {
   20: 'DrawNotExpired',
   21: 'NoDrawPending',
   22: 'DrawTooEarly',
-  23: 'InvalidSecret',
+  23: 'InvalidBeacon',
   24: 'InsufficientVault',
   25: 'NotWinner',
   26: 'AlreadyClaimed',

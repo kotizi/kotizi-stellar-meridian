@@ -6,6 +6,7 @@ import { PrivyAuthenticator, privyDirectory } from './auth/privy.js';
 import { openDb } from './db/index.js';
 import type { Deps } from './deps.js';
 import { keypairLoader } from './stellar/keys.js';
+import { DrandBeacons } from './drand.js';
 import { RpcChain } from './stellar/rpc-chain.js';
 
 async function main() {
@@ -25,6 +26,7 @@ async function main() {
         ? new PrivyAuthenticator(privyDirectory(config.PRIVY_APP_ID!, config.PRIVY_APP_SECRET!))
         : new DevAuthenticator(),
     chain,
+    beacons: new DrandBeacons(config.DRAND_URL),
     sponsor,
     keeper: config.KEEPER_KEYFILE ? load(config.KEEPER_KEYFILE) : sponsor,
     kycSigner: config.KYC_KEYFILE ? load(config.KYC_KEYFILE) : undefined,

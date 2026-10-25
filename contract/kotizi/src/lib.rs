@@ -3,6 +3,7 @@
 //! (OpenZeppelin `Base`), quota payments, draws and prizes. State is key-value (see `DataKey`);
 //! per-cota data lives in per-index entries so each call touches a handful of entries.
 
+mod drand;
 mod draw_lib;
 mod errors;
 mod events;
@@ -11,6 +12,8 @@ mod types;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_beacons;
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, token::TokenClient, Address, Bytes, BytesN, Env,
@@ -38,15 +41,15 @@ fn config(e: &Env) -> Config {
         .expect("constructor ran")
 }
 
-fn load_group(e: &Env, group_id: u32) -> Group {
+fn load_group(e: &Env, group_id: u32) -> Result<Group, Error> {
     let key = DataKey::Group(group_id);
     let group = e
         .storage()
         .persistent()
         .get(&key)
-        .unwrap_or_else(|| panic_with_error!(e, Error::GroupNotFound));
+        .ok_or(Error::GroupNotFound)?;
     ttl::extend_persistent(e, &key);
-    group
+    Ok(group)
 }
 
 fn save_group(e: &Env, group_id: u32, group: &Group) {
@@ -55,25 +58,36 @@ fn save_group(e: &Env, group_id: u32, group: &Group) {
     ttl::extend_persistent(e, &key);
 }
 
-fn require_kyc(e: &Env, wallet: &Address) {
+fn require_kyc(e: &Env, wallet: &Address) -> Result<(), Error> {
     let key = DataKey::Kyc(wallet.clone());
     if !e.storage().persistent().has(&key) {
-        panic_with_error!(e, Error::NotKyc);
+        return Err(Error::NotKyc);
     }
     ttl::extend_persistent(e, &key);
+    Ok(())
 }
 
-fn checked<T>(e: &Env, v: Option<T>) -> T {
-    v.unwrap_or_else(|| panic_with_error!(e, Error::MathOverflow))
+fn checked<T>(v: Option<T>) -> Result<T, Error> {
+    v.ok_or(Error::MathOverflow)
+}
+
+/// For the entry points whose signature the SEP-50 trait fixes (no `Result`): fail with the same error.
+fn or_panic<T>(e: &Env, r: Result<T, Error>) -> T {
+    r.unwrap_or_else(|err| panic_with_error!(e, err))
 }
 
 // ------------------------------------------------------------------ contract
 
 #[contractimpl]
 impl Kotizi {
-    pub fn __constructor(e: &Env, admin: Address, kyc_authority: Address, token: Address) {
+    pub fn __constructor(
+        e: &Env,
+        admin: Address,
+        kyc_authority: Address,
+        token: Address,
+    ) -> Result<(), Error> {
         if TokenClient::new(e, &token).decimals() != TOKEN_DECIMALS {
-            panic_with_error!(e, Error::InvalidTokenDecimals);
+            return Err(Error::InvalidTokenDecimals);
         }
         e.storage().instance().set(
             &DataKey::Config,
@@ -91,20 +105,22 @@ impl Kotizi {
             String::from_str(e, "COTA"),
         );
         ttl::extend_instance(e);
+        Ok(())
     }
 
     // -------------------------------------------------------------- admin
 
     /// KYC authority only. No revocation (accepted, see PLAN.md).
-    pub fn approve_kyc(e: &Env, wallet: Address) {
+    pub fn approve_kyc(e: &Env, wallet: Address) -> Result<(), Error> {
         config(e).kyc_authority.require_auth();
         let key = DataKey::Kyc(wallet.clone());
         if e.storage().persistent().has(&key) {
-            panic_with_error!(e, Error::AlreadyApproved);
+            return Err(Error::AlreadyApproved);
         }
         e.storage().persistent().set(&key, &e.ledger().timestamp());
         ttl::extend_persistent(e, &key);
         KycApproved { wallet }.publish(e);
+        Ok(())
     }
 
     /// Admin only. Returns the new group id.
@@ -116,25 +132,25 @@ impl Kotizi {
         max_members: u32,
         period: u64,
         admin_fee_bps: u32,
-    ) -> u32 {
+    ) -> Result<u32, Error> {
         config(e).admin.require_auth();
         if name.len() > MAX_NAME_LEN {
-            panic_with_error!(e, Error::NameTooLong);
+            return Err(Error::NameTooLong);
         }
         if uri.len() > MAX_URI_LEN {
-            panic_with_error!(e, Error::UriTooLong);
+            return Err(Error::UriTooLong);
         }
         if quota <= 0 {
-            panic_with_error!(e, Error::InvalidQuota);
+            return Err(Error::InvalidQuota);
         }
         if !(MIN_MEMBERS..=MAX_MEMBERS).contains(&max_members) {
-            panic_with_error!(e, Error::InvalidMaxMembers);
+            return Err(Error::InvalidMaxMembers);
         }
         if period == 0 {
-            panic_with_error!(e, Error::InvalidPeriod);
+            return Err(Error::InvalidPeriod);
         }
         if admin_fee_bps > MAX_FEE_BPS {
-            panic_with_error!(e, Error::FeeTooHigh);
+            return Err(Error::FeeTooHigh);
         }
 
         let group_id: u32 = e
@@ -143,13 +159,13 @@ impl Kotizi {
             .get(&DataKey::GroupCount)
             .unwrap_or(0);
         if group_id > MAX_GROUP_ID {
-            panic_with_error!(e, Error::TooManyGroups);
+            return Err(Error::TooManyGroups);
         }
         e.storage()
             .instance()
             .set(&DataKey::GroupCount, &(group_id + 1));
 
-        let next_draw_ts = checked(e, e.ledger().timestamp().checked_add(period));
+        let next_draw_ts = checked(e.ledger().timestamp().checked_add(period))?;
         let group = Group {
             name: name.clone(),
             uri,
@@ -167,9 +183,7 @@ impl Kotizi {
             unclaimed_total: 0,
             vault: 0,
             last_winner_index: 0,
-            commitment: BytesN::from_array(e, &[0u8; 32]),
-            commit_ledger: 0,
-            committer: None,
+            draw_round: 0,
         };
         save_group(e, group_id, &group);
         GroupCreated {
@@ -181,20 +195,20 @@ impl Kotizi {
             admin_fee_bps,
         }
         .publish(e);
-        group_id
+        Ok(group_id)
     }
 
     // -------------------------------------------------------------- members
 
     /// Mints the next cota of the group to `member` (who must be KYC-approved and sign). Allowed in
     /// any status until the group is full. Returns the cota index.
-    pub fn join_group(e: &Env, group_id: u32, member: Address) -> u32 {
+    pub fn join_group(e: &Env, group_id: u32, member: Address) -> Result<u32, Error> {
         member.require_auth();
-        require_kyc(e, &member);
-        let mut group = load_group(e, group_id);
+        require_kyc(e, &member)?;
+        let mut group = load_group(e, group_id)?;
         let index = group.members_joined;
         if index >= group.max_members {
-            panic_with_error!(e, Error::GroupFull);
+            return Err(Error::GroupFull);
         }
         group.members_joined = index + 1; // index < max_members <= 64
         save_group(e, group_id, &group);
@@ -207,33 +221,33 @@ impl Kotizi {
             members_joined: group.members_joined,
         }
         .publish(e);
-        index
+        Ok(index)
     }
 
     /// The current owner of the cota pays this round's quota, once, while the group is Open.
-    pub fn pay_quota(e: &Env, group_id: u32, index: u32) {
-        let mut group = load_group(e, group_id);
+    pub fn pay_quota(e: &Env, group_id: u32, index: u32) -> Result<(), Error> {
+        let mut group = load_group(e, group_id)?;
         if index >= group.members_joined {
-            panic_with_error!(e, Error::CotaNotFound);
+            return Err(Error::CotaNotFound);
         }
         let owner = Base::owner_of(e, token_id(group_id, index));
         owner.require_auth();
         if group.status != Status::Open {
-            panic_with_error!(e, Error::GroupNotOpen);
+            return Err(Error::GroupNotOpen);
         }
         let bit = 1u64 << index;
         if group.paid_bitmap & bit != 0 {
-            panic_with_error!(e, Error::AlreadyPaid);
+            return Err(Error::AlreadyPaid);
         }
 
         // State first, then the external call (Soroban has no re-entry anyway).
         group.paid_bitmap |= bit;
-        group.vault = checked(e, group.vault.checked_add(group.quota));
+        group.vault = checked(group.vault.checked_add(group.quota))?;
         let paid_key = DataKey::Paid(group_id, index);
         let total: i128 = e.storage().persistent().get(&paid_key).unwrap_or(0);
         e.storage()
             .persistent()
-            .set(&paid_key, &checked(e, total.checked_add(group.quota)));
+            .set(&paid_key, &checked(total.checked_add(group.quota))?);
         ttl::extend_persistent(e, &paid_key);
         save_group(e, group_id, &group);
 
@@ -243,8 +257,8 @@ impl Kotizi {
         token.transfer(&owner, &this, &group.quota);
         // Fee-on-transfer and rebasing tokens would break the vault accounting.
         let after = token.balance(&this);
-        if checked(e, after.checked_sub(before)) != group.quota {
-            panic_with_error!(e, Error::UnsupportedToken);
+        if checked(after.checked_sub(before))? != group.quota {
+            return Err(Error::UnsupportedToken);
         }
         QuotaPaid {
             group_id,
@@ -254,84 +268,80 @@ impl Kotizi {
             amount: group.quota,
         }
         .publish(e);
+        Ok(())
     }
 
     // -------------------------------------------------------------- draw
 
-    /// Commit step. `committer` (normally the backend keeper) commits to `sha256(secret)`; payments freeze
-    /// and the eligible set is fixed until `settle_draw`. A pending draw can be requested again (by anyone,
-    /// with a new commitment) once its commit has expired, so a silent committer cannot stall a group.
-    // TODO(vrf): the committer knows the outcome before revealing and can withhold it (bounded by the expiry
-    // window); `env.prng()` mixed in at settle keeps it from choosing the winner. Testnet demo only.
-    pub fn request_draw(e: &Env, group_id: u32, committer: Address, commitment: BytesN<32>) {
-        committer.require_auth();
-        let mut group = load_group(e, group_id);
-        if e.ledger().timestamp() < group.next_draw_ts {
-            panic_with_error!(e, Error::DrawNotDue);
+    /// Fixes the drand round that will decide this draw and freezes payments and the eligible set until
+    /// `settle_draw`. Needs no signature: the round is derived from the ledger time, and anyone may ask
+    /// for a due draw. The round is the one published `DRAW_ROUND_DELAY` rounds after the current one, so
+    /// nobody knows its randomness yet, and it is fixed here, so nobody can pick another. A pending draw
+    /// can be requested again (a new round) only once its round is `DRAW_EXPIRY_SECS` old.
+    pub fn request_draw(e: &Env, group_id: u32) -> Result<(), Error> {
+        let mut group = load_group(e, group_id)?;
+        let now = e.ledger().timestamp();
+        if now < group.next_draw_ts {
+            return Err(Error::DrawNotDue);
         }
-        let seq = e.ledger().sequence();
         match group.status {
-            Status::Completed => panic_with_error!(e, Error::GroupNotOpen),
-            Status::DrawPending if seq <= group.commit_ledger.saturating_add(COMMIT_EXPIRY) => {
-                panic_with_error!(e, Error::DrawNotExpired)
+            Status::Completed => return Err(Error::GroupNotOpen),
+            Status::DrawPending
+                if now <= drand::round_time(group.draw_round).saturating_add(DRAW_EXPIRY_SECS) =>
+            {
+                return Err(Error::DrawNotExpired);
             }
             _ => {}
         }
         if group.paid_bitmap & !group.won_bitmap == 0 {
-            panic_with_error!(e, Error::NoEligibleMembers);
+            return Err(Error::NoEligibleMembers);
         }
         group.status = Status::DrawPending;
-        group.commitment = commitment;
-        group.commit_ledger = checked(e, seq.checked_add(COMMIT_DELAY));
-        group.committer = Some(committer);
+        group.draw_round = checked(drand::round_after(now, DRAW_ROUND_DELAY))?;
         save_group(e, group_id, &group);
         DrawRequested {
             group_id,
             round: group.round,
-            commit_ledger: group.commit_ledger,
+            draw_round: group.draw_round,
         }
         .publish(e);
+        Ok(())
     }
 
-    /// Reveal step, signed by the committer. Picks the winner among the cotas that paid and have not won
-    /// and records the prize. Nothing here moves tokens: the winner pulls it with `claim_prize`.
-    pub fn settle_draw(e: &Env, group_id: u32, secret: BytesN<32>) {
-        let mut group = load_group(e, group_id);
+    /// Settles a pending draw with the drand signature of its round (uncompressed G1, 96 bytes). Anyone
+    /// may send it: the contract verifies the BLS signature itself. Picks the winner among the cotas that
+    /// paid and have not won and records the prize. Nothing here moves tokens: the winner pulls it with
+    /// `claim_prize`.
+    pub fn settle_draw(e: &Env, group_id: u32, signature: BytesN<96>) -> Result<(), Error> {
+        let mut group = load_group(e, group_id)?;
         if group.status != Status::DrawPending {
-            panic_with_error!(e, Error::NoDrawPending);
+            return Err(Error::NoDrawPending);
         }
-        group
-            .committer
-            .clone()
-            .expect("pending draw has a committer")
-            .require_auth();
-        if e.ledger().sequence() <= group.commit_ledger {
-            panic_with_error!(e, Error::DrawTooEarly);
+        if e.ledger().timestamp() < drand::round_time(group.draw_round) {
+            return Err(Error::DrawTooEarly);
         }
-        if e.crypto().sha256(&Bytes::from(secret.clone())).to_bytes() != group.commitment {
-            panic_with_error!(e, Error::InvalidSecret);
+        if !drand::verify(e, group.draw_round, &signature) {
+            return Err(Error::InvalidBeacon);
         }
         let eligible = group.paid_bitmap & !group.won_bitmap;
         if eligible == 0 {
-            panic_with_error!(e, Error::NoEligibleMembers);
+            return Err(Error::NoEligibleMembers);
         }
 
-        // random = sha256(secret || group_id || round || prng): the secret was fixed at commit time, the
-        // prng term only exists in this transaction. Binding group and round stops replays elsewhere.
+        // random = sha256(signature || group_id): the signature is unique per drand round and unknowable
+        // before it; binding the group keeps groups that draw the same round from sharing an outcome.
         let round = group.round;
-        let mut seed = Bytes::from(secret);
+        let mut seed = Bytes::from(signature);
         seed.append(&Bytes::from_array(e, &group_id.to_be_bytes()));
-        seed.append(&Bytes::from_array(e, &round.to_be_bytes()));
-        seed.append(&Bytes::from_array(e, &e.prng().gen::<u64>().to_be_bytes()));
         let random = e.crypto().sha256(&seed).to_bytes();
         let winner = draw_lib::pick_winner(&random, eligible);
 
         let paid = i128::from(draw_lib::popcount(group.paid_bitmap));
-        let pool = checked(e, group.quota.checked_mul(paid));
+        let pool = checked(group.quota.checked_mul(paid))?;
         // The vault holds every prize still waiting plus this round's collection.
-        let owed = checked(e, group.unclaimed_total.checked_add(pool));
+        let owed = checked(group.unclaimed_total.checked_add(pool))?;
         if group.vault < owed {
-            panic_with_error!(e, Error::InsufficientVault);
+            return Err(Error::InsufficientVault);
         }
 
         let bit = 1u64 << winner;
@@ -340,16 +350,15 @@ impl Kotizi {
         group.unclaimed_total = owed;
         group.last_winner_index = winner;
         group.paid_bitmap = 0;
-        group.round = checked(e, round.checked_add(1));
-        group.next_draw_ts = checked(e, e.ledger().timestamp().checked_add(group.period));
+        group.round = checked(round.checked_add(1))?;
+        group.next_draw_ts = checked(e.ledger().timestamp().checked_add(group.period))?;
         let completed = group.round >= group.max_members;
         group.status = if completed {
             Status::Completed
         } else {
             Status::Open
         };
-        group.commitment = BytesN::from_array(e, &[0u8; 32]);
-        group.committer = None;
+        group.draw_round = 0;
 
         let prize_key = DataKey::Prize(group_id, winner);
         e.storage().persistent().set(
@@ -369,24 +378,25 @@ impl Kotizi {
             completed,
         }
         .publish(e);
+        Ok(())
     }
 
     /// Pays a cota that has won, in any round and at any time, also after the group completed: the current
     /// owner of the NFT gets `prize - fee`, the admin gets `fee`. One prize per cota, so claims never
     /// depend on each other.
-    pub fn claim_prize(e: &Env, group_id: u32, index: u32) {
-        let mut group = load_group(e, group_id);
+    pub fn claim_prize(e: &Env, group_id: u32, index: u32) -> Result<(), Error> {
+        let mut group = load_group(e, group_id)?;
         if index >= group.members_joined {
-            panic_with_error!(e, Error::CotaNotFound);
+            return Err(Error::CotaNotFound);
         }
         let owner = Base::owner_of(e, token_id(group_id, index));
         owner.require_auth();
         let bit = 1u64 << index;
         if group.won_bitmap & bit == 0 {
-            panic_with_error!(e, Error::NotWinner);
+            return Err(Error::NotWinner);
         }
         if group.unclaimed_bitmap & bit == 0 {
-            panic_with_error!(e, Error::AlreadyClaimed);
+            return Err(Error::AlreadyClaimed);
         }
         let prize_key = DataKey::Prize(group_id, index);
         let prize: Prize = e
@@ -397,22 +407,21 @@ impl Kotizi {
         ttl::extend_persistent(e, &prize_key);
 
         let fee = checked(
-            e,
-            checked(e, prize.gross.checked_mul(i128::from(group.admin_fee_bps)))
+            checked(prize.gross.checked_mul(i128::from(group.admin_fee_bps)))?
                 .checked_div(BPS_DENOMINATOR),
-        );
-        let net = checked(e, prize.gross.checked_sub(fee));
+        )?;
+        let net = checked(prize.gross.checked_sub(fee))?;
 
         group.unclaimed_bitmap &= !bit;
-        group.unclaimed_total = checked(e, group.unclaimed_total.checked_sub(prize.gross));
-        group.vault = checked(e, group.vault.checked_sub(prize.gross));
+        group.unclaimed_total = checked(group.unclaimed_total.checked_sub(prize.gross))?;
+        group.vault = checked(group.vault.checked_sub(prize.gross))?;
         save_group(e, group_id, &group);
 
         let cfg = config(e);
         let token = TokenClient::new(e, &cfg.token);
         let this = e.current_contract_address();
         if token.balance(&this) < prize.gross {
-            panic_with_error!(e, Error::InsufficientVault);
+            return Err(Error::InsufficientVault);
         }
         token.transfer(&this, &owner, &net);
         if fee > 0 {
@@ -427,11 +436,12 @@ impl Kotizi {
             fee,
         }
         .publish(e);
+        Ok(())
     }
 
     // -------------------------------------------------------------- views
 
-    pub fn get_group(e: &Env, group_id: u32) -> Group {
+    pub fn get_group(e: &Env, group_id: u32) -> Result<Group, Error> {
         load_group(e, group_id)
     }
 
@@ -443,8 +453,8 @@ impl Kotizi {
     }
 
     /// Every cota that has won with its prize, by cota index: one call instead of one per cota.
-    pub fn winners(e: &Env, group_id: u32) -> soroban_sdk::Vec<Winner> {
-        let group = load_group(e, group_id);
+    pub fn winners(e: &Env, group_id: u32) -> Result<soroban_sdk::Vec<Winner>, Error> {
+        let group = load_group(e, group_id)?;
         let mut out = soroban_sdk::Vec::new(e);
         for index in 0..group.members_joined {
             if group.won_bitmap & (1u64 << index) != 0 {
@@ -460,7 +470,7 @@ impl Kotizi {
                 });
             }
         }
-        out
+        Ok(out)
     }
 
     pub fn group_count(e: &Env) -> u32 {
@@ -491,13 +501,13 @@ impl Kotizi {
     }
 
     /// Current owner of every cota joined so far, by cota index. One call instead of one per cota.
-    pub fn cota_owners(e: &Env, group_id: u32) -> soroban_sdk::Vec<Address> {
-        let group = load_group(e, group_id);
+    pub fn cota_owners(e: &Env, group_id: u32) -> Result<soroban_sdk::Vec<Address>, Error> {
+        let group = load_group(e, group_id)?;
         let mut owners = soroban_sdk::Vec::new(e);
         for i in 0..group.members_joined {
             owners.push_back(Base::owner_of(e, token_id(group_id, i)));
         }
-        owners
+        Ok(owners)
     }
 }
 
@@ -509,18 +519,18 @@ impl NonFungibleToken for Kotizi {
 
     /// Whoever receives a cota, by join or by transfer, must be KYC-approved.
     fn transfer(e: &Env, from: Address, to: Address, token_id: u32) {
-        require_kyc(e, &to);
+        or_panic(e, require_kyc(e, &to));
         Self::ContractType::transfer(e, &from, &to, token_id);
     }
 
     fn transfer_from(e: &Env, spender: Address, from: Address, to: Address, token_id: u32) {
-        require_kyc(e, &to);
+        or_panic(e, require_kyc(e, &to));
         Self::ContractType::transfer_from(e, &spender, &from, &to, token_id);
     }
 
     /// Every cota of a group shares the group's metadata JSON.
     fn token_uri(e: &Env, token_id: u32) -> String {
         let _ = Self::ContractType::owner_of(e, token_id);
-        load_group(e, token_id >> 8).uri
+        or_panic(e, load_group(e, token_id >> 8)).uri
     }
 }
