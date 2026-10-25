@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { BackendError } from "../api";
 import { KotiziError } from "../errors";
-import { CONTRACT_ERRORS, toStellarError, UNMAPPED_CONTRACT_ERRORS } from "./errors";
+import { CONTRACT_ERROR_CODES, CONTRACT_ERRORS, contractErrorFromHost, toStellarError, UNMAPPED_CONTRACT_ERRORS } from "./errors";
 
 const code = (error: unknown) => (error instanceof KotiziError ? error.code : null);
 
@@ -17,6 +17,19 @@ describe("contract errors", () => {
     expect(names.filter((name) => !known.has(name))).toEqual([]);
     // And nothing here names an error the contract doesn't have.
     expect([...known].filter((name) => !names.includes(name))).toEqual([]);
+  });
+
+  test("the error numbers match errors.rs", () => {
+    const source = readFileSync(join(import.meta.dir, "../../../../contract/kotizi/src/errors.rs"), "utf8");
+    const declared = Object.fromEntries([...source.matchAll(/^\s+(\w+) = (\d+),$/gm)].map(([, name, n]) => [Number(n), name]));
+    expect(CONTRACT_ERROR_CODES).toEqual(declared);
+  });
+
+  test("a raw host error from the RPC (the admin's own transaction) becomes the app's code", () => {
+    expect(contractErrorFromHost("HostError: Error(Contract, #8)\n...")).toBe("FeeTooHigh");
+    expect(contractErrorFromHost("Error(Contract, #27)")).toBe("TokenNotSupported");
+    expect(contractErrorFromHost("Error(Contract, #17)")).toBeNull();
+    expect(contractErrorFromHost("Error(Auth, InvalidAction)")).toBeNull();
   });
 
   test("a contract error from the relay or a draw step becomes the app's code", () => {

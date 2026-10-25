@@ -40,6 +40,8 @@ const PROGRAM_MESSAGES = {
   AccountNotFound: "Account not found",
   /** The paying account (the admin, on create_group) can't cover the network fee and rent. */
   NotEnoughXlm: "The admin account doesn't have enough to pay the network fee",
+  /** The admin's own wallet (Freighter) is set to another network than the app's. */
+  WalletWrongNetwork: "Switch your wallet to Testnet and try again",
 } as const;
 
 const TX_FAILURE_MESSAGES = {

@@ -46,6 +46,53 @@ export const UNMAPPED_CONTRACT_ERRORS = [
 ] as const;
 
 /**
+ * The contract's error numbers (`#[repr(u32)]` in errors.rs). A transaction the app sends itself (the
+ * admin's `create_group`) fails on the RPC with the bare `Error(Contract, #N)`; the backend's answers
+ * already carry the name.
+ */
+export const CONTRACT_ERROR_CODES: Record<number, string> = {
+  1: "InvalidTokenDecimals",
+  2: "AlreadyApproved",
+  3: "NotKyc",
+  4: "GroupNotFound",
+  5: "InvalidQuota",
+  6: "InvalidMaxMembers",
+  7: "InvalidPeriod",
+  8: "FeeTooHigh",
+  9: "NameTooLong",
+  10: "UriTooLong",
+  11: "GroupFull",
+  12: "GroupNotOpen",
+  13: "CotaNotFound",
+  14: "AlreadyPaid",
+  15: "UnsupportedToken",
+  16: "TooManyGroups",
+  17: "MathOverflow",
+  18: "DrawNotDue",
+  19: "NoEligibleMembers",
+  20: "DrawNotExpired",
+  21: "NoDrawPending",
+  22: "DrawTooEarly",
+  23: "InvalidBeacon",
+  24: "InsufficientVault",
+  25: "NotWinner",
+  26: "AlreadyClaimed",
+  27: "TokenNotSupported",
+  28: "TokenAlreadyAdded",
+  29: "TooManyTokens",
+};
+
+/**
+ * The app's code for a raw host error from the RPC (`Error(Contract, #N)` in a failed simulation or
+ * transaction), or null when it names no contract error the UI has words for.
+ */
+export function contractErrorFromHost(message: string): KotiziErrorCode | null {
+  const code = /Error\(Contract, #(\d+)\)/.exec(message)?.[1];
+  const name = code === undefined ? undefined : CONTRACT_ERROR_CODES[Number(code)];
+  return name ? (CONTRACT_ERRORS[name] ?? null) : null;
+}
+
+/**
  * OpenZeppelin's fungible token (the demo test token) can't cover a transfer:
  * `FungibleTokenError::InsufficientBalance`. Its code isn't the Kotizi contract's, so the backend
  * passes the raw host error through as `transaction_failed`.

@@ -4,7 +4,7 @@ import { useMemo, useSyncExternalStore, type ReactNode } from "react";
 
 import { randomAddress } from "@/chain/mock/client";
 
-import { LOGIN_METHODS, SessionContext, type Session } from "./context";
+import { SessionContext, type Session } from "./context";
 import { clearIdentityCheck, completeIdentityCheck, markLogin, useIdentityCheck } from "./identity-check";
 
 const STORAGE_KEY = "kotizi:mock-session";
@@ -43,9 +43,12 @@ export function MockSession({ children }: { children: ReactNode }) {
       status: address === undefined ? "loading" : address ? "signedIn" : "signedOut",
       address: address ?? null,
       label: address ? "demo@kotizi.app" : null,
-      loginMethods: LOGIN_METHODS,
-      // The mock chain client doesn't sign anything.
+      // No Freighter behind the mock: email only.
+      loginMethods: ["email"],
+      walletOnly: false,
+      // The mock chain client doesn't sign anything, and lets every account create groups.
       signer: null,
+      adminWallet: null,
       getAccessToken: async () => null,
       isNewAccount: identityCheck.isNewAccount,
       newAccountPending: Boolean(address) && identityCheck.pending,

@@ -4,12 +4,16 @@ import { PrivyProvider, useLogin, usePrivy } from "@privy-io/react-auth";
 import { useCreateWallet, useSignRawHash } from "@privy-io/react-auth/extended-chains";
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 
+import { showActionStatus } from "@/chain/action-status";
+import { failureStatus } from "@/chain/hooks";
 import { env } from "@/config/env";
 import { sleep } from "@/lib/sleep";
 
-import { LOGIN_METHODS, SessionContext, type Session, type SessionSigner } from "./context";
+import { SessionContext, type Session, type SessionSigner } from "./context";
+import { useFreighterWallet } from "./freighter-wallet";
 import { clearIdentityCheck, completeIdentityCheck, markLogin, useIdentityCheck } from "./identity-check";
 import { needsStellarWallet, signatureBytes, stellarAddressOf, toHex, type PrivyUserLike } from "./stellar-wallet";
+import { setWalletSession, useWalletSession } from "./wallet-session";
 
 /** Tries at creating a missing Stellar wallet before leaving it to the next visit. */
 const CREATE_WALLET_ATTEMPTS = 3;
@@ -18,14 +22,17 @@ const CREATE_WALLET_RETRY_MS = 2_000;
 // Walletless onboarding: email login, then the app gives the account a Stellar embedded wallet.
 // Stellar is a Privy "extended chain" (raw-hash signing, no `createOnLogin`), so the wallet is
 // created here once Privy's login flow is over, and signs the 32-byte payloads the backend's relay
-// asks for. Privy has no external Stellar wallets; the admin signs group creation with Freighter.
+// asks for. Privy has no external Stellar wallets, so the wallet sign-in ("Already have a crypto
+// wallet?") is Freighter's own, outside Privy: the operator's account (`Session.walletOnly`), which
+// also signs group creation.
 export function PrivySession({ children }: { children: ReactNode }) {
   return (
     <PrivyProvider
       appId={env.privyAppId}
       clientId={env.privyClientId}
       config={{
-        loginMethods: [...LOGIN_METHODS],
+        // Privy's own modal: email only (the wallet sign-in is Freighter's, above).
+        loginMethods: ["email"],
         appearance: {
           theme: "#171717", // graphite, the brand's dark background (Privy's "dark" is navy)
           accentColor: "#0000FF",
@@ -80,6 +87,19 @@ function PrivySessionBridge({ children }: { children: ReactNode }) {
     [address],
   );
 
+  // The operator's Freighter: group creation, and the wallet sign-in.
+  const adminWallet = useFreighterWallet();
+
+  // Signed in with Freighter (the operator, no Privy account): it counts while Freighter still
+  // shares that address with the site, which takes a moment to read after a reload.
+  const walletSession = useWalletSession();
+  const walletChecking = walletSession != null && adminWallet.available === undefined;
+  const walletOnly = !authenticated && walletSession != null && adminWallet.address === walletSession;
+  useEffect(() => {
+    // Freighter no longer shares it (removed, another account, the site disallowed): forget it.
+    if (walletSession && adminWallet.available !== undefined && adminWallet.address !== walletSession) setWalletSession(null);
+  }, [walletSession, adminWallet.available, adminWallet.address]);
+
   // Stable while signed in: the chain client is rebuilt whenever this changes.
   const accessToken = useCallback(
     () => (authenticated ? getAccessToken() : Promise.resolve(null)),
@@ -87,25 +107,45 @@ function PrivySessionBridge({ children }: { children: ReactNode }) {
   );
 
   const session = useMemo<Session>(() => {
+    const signInWithWallet = async () => {
+      if (adminWallet.available === false) {
+        showActionStatus({
+          phase: "failed",
+          tone: "warning",
+          title: "Freighter not found",
+          description: "Install the Freighter extension (freighter.app) with your account, then try again.",
+        });
+        return;
+      }
+      try {
+        setWalletSession(await adminWallet.connect());
+      } catch (error) {
+        showActionStatus(failureStatus(error, "Couldn't connect Freighter"));
+      }
+    };
     return {
       mode: "privy",
-      status: !ready ? "loading" : authenticated ? "signedIn" : "signedOut",
-      address,
-      label: email,
-      loginMethods: LOGIN_METHODS,
-      signer,
+      status: !ready || walletSession === undefined || walletChecking ? "loading" : authenticated || walletOnly ? "signedIn" : "signedOut",
+      address: walletOnly ? walletSession : address,
+      label: walletOnly ? null : email,
+      loginMethods: ["email", "wallet"],
+      walletOnly,
+      signer: walletOnly ? null : signer,
+      adminWallet,
       getAccessToken: accessToken,
-      isNewAccount: identityCheck.isNewAccount,
+      isNewAccount: walletOnly ? null : identityCheck.isNewAccount,
       newAccountPending: authenticated && identityCheck.pending,
-      identityVerified: authenticated && identityCheck.verified,
+      // The operator's account doesn't go through identity verification.
+      identityVerified: walletOnly || (authenticated && identityCheck.verified),
       completeIdentityCheck,
-      login: (method) => login(method ? { loginMethods: [method] } : undefined),
+      login: (method) => (method === "wallet" ? void signInWithWallet() : login({ loginMethods: ["email"] })),
       logout: async () => {
+        setWalletSession(null);
         clearIdentityCheck();
-        await logout();
+        if (authenticated) await logout();
       },
     };
-  }, [ready, authenticated, address, email, signer, accessToken, identityCheck, login, logout]);
+  }, [ready, authenticated, address, email, signer, adminWallet, walletSession, walletChecking, walletOnly, accessToken, identityCheck, login, logout]);
 
   return <SessionContext value={session}>{children}</SessionContext>;
 }

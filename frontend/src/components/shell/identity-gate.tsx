@@ -22,7 +22,8 @@ export function useIdentityCheckRequired(): boolean | undefined {
 /** `failed`: the identity record couldn't be read, so it won't be known until a later poll. */
 function useIdentityGateState(): { required: boolean | undefined; failed: boolean } {
   const session = useSession();
-  const address = session.status === "signedIn" ? session.address : null;
+  // The operator's wallet account doesn't verify its identity (`identityVerified` is true for it).
+  const address = session.status === "signedIn" && !session.walletOnly ? session.address : null;
   const kyc = useKyc(address);
   const kycApproved = kyc.loading || kyc.error || !address ? undefined : kyc.data !== null;
   if (session.status !== "signedIn") return { required: false, failed: false };

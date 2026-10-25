@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { Account, Keypair, nativeToScVal, scValToNative, StrKey, type Transaction } from "@stellar/stellar-sdk";
 import type { z } from "zod";
 
-import type { SessionSigner } from "@/session/context";
+import type { AdminWallet, SessionSigner } from "@/session/context";
 
 import { BackendError, type BackendApi } from "../api";
 import { KotiziError } from "../errors";
+import type { CreateGroupInput } from "../types";
+import type { AdminRpc } from "./admin-tx";
 import { StellarKotiziClient } from "./client";
 import type { GroupView } from "./views";
 
@@ -91,7 +94,14 @@ function fakeSigner(address = ME) {
  * A backend answering from `routes` ("METHOD /path"), checking every answer with the client's schema.
  * Its relay applies a join to group 0's member list, like the chain would.
  */
-function setup(routes: Record<string, (body: unknown) => unknown> = {}, { signer = null }: { signer?: SessionSigner | null } = {}) {
+function setup(
+  routes: Record<string, (body: unknown) => unknown> = {},
+  {
+    signer = null,
+    adminWallet = null,
+    adminRpc,
+  }: { signer?: SessionSigner | null; adminWallet?: AdminWallet | null; adminRpc?: AdminRpc } = {},
+) {
   const calls: { key: string; body?: unknown; auth: boolean }[] = [];
   const members0 = [member(0, OTHER), member(1, ME)];
   let prepared: { fn: string; wallet: string } | null = null;
@@ -134,7 +144,10 @@ function setup(routes: Record<string, (body: unknown) => unknown> = {}, { signer
       return schema.parse(route(options.body));
     },
   };
-  return { client: new StellarKotiziClient({ api, signer }), calls };
+  return {
+    client: new StellarKotiziClient({ api, signer, adminWallet, adminRpc: adminRpc && (() => adminRpc) }),
+    calls,
+  };
 }
 
 const codeOf = (promise: Promise<unknown>) =>
@@ -252,9 +265,165 @@ describe("failures", () => {
     await expect(client.getGroup("0")).rejects.toThrow();
   });
 
-  test("group creation isn't available yet and says so", async () => {
-    const { client } = setup();
-    expect(await codeOf(client.createGroup())).toBe("TransactionFailed");
+});
+
+describe("group creation (the admin's Freighter wallet, straight to the RPC)", () => {
+  // The admin's transaction is a real Stellar envelope, so these are real keys and contract ids.
+  const admin = Keypair.random().publicKey();
+  const kotizi = StrKey.encodeContract(Buffer.alloc(32, 1));
+  const demo6 = StrKey.encodeContract(Buffer.alloc(32, 2));
+  const usdc7 = StrKey.encodeContract(Buffer.alloc(32, 3));
+  const PASSPHRASE = "Test SDF Network ; September 2015";
+
+  const input = (overrides: Partial<CreateGroupInput> = {}): CreateGroupInput => ({
+    organizer: admin,
+    name: "Casa Nova",
+    uri: "http://localhost:3000/metadata/casa-ipe.json?value=500",
+    quotaAmount: 100_000_000n,
+    maxMembers: 5,
+    periodSecs: 300,
+    adminFeeBps: 200,
+    ...overrides,
+  });
+
+  /** A Freighter that signs whatever it's given (unchanged) on `PASSPHRASE`, recording the calls. */
+  function fakeFreighter(overrides: Partial<AdminWallet> = {}) {
+    const signed: string[] = [];
+    const wallet: AdminWallet = {
+      available: true,
+      address: admin,
+      connect: async () => admin,
+      signTransaction: async (xdr, passphrase) => {
+        expect(passphrase).toBe(PASSPHRASE);
+        signed.push(xdr);
+        return xdr;
+      },
+      ...overrides,
+    };
+    return { wallet, signed };
+  }
+
+  /** An RPC that accepts the call and answers group 4, recording the transaction it prepared. */
+  function fakeRpc(overrides: Partial<AdminRpc> = {}) {
+    const prepared: Transaction[] = [];
+    const rpc: AdminRpc = {
+      getAccount: async (address) => new Account(address, "10"),
+      prepareTransaction: async (tx) => {
+        prepared.push(tx);
+        return tx;
+      },
+      sendTransaction: async () => ({ status: "PENDING", hash: "create-tx" }),
+      getTransaction: async () => ({ status: "SUCCESS", returnValue: nativeToScVal(4, { type: "u32" }) }),
+      ...overrides,
+    };
+    return { rpc, prepared };
+  }
+
+  const adminConfig = (overrides: Record<string, unknown> = {}) => ({
+    "GET /v1/config": () =>
+      config({
+        contractId: kotizi,
+        admin,
+        tokens: [
+          { token: demo6, decimals: 6 },
+          { token: usdc7, decimals: 7 },
+        ],
+        faucetToken: demo6,
+        ...overrides,
+      }),
+  });
+
+  /** The `create_group` call inside the prepared transaction, its arguments as plain values. */
+  function callOf(tx: Transaction) {
+    // @stellar/js-xdr 5 decodes union arms and struct fields as properties.
+    const op = tx.operations[0] as unknown as {
+      func: { invokeContract: { functionName: { toString(): string }; args: Parameters<typeof scValToNative>[0][] } };
+    };
+    const call = op.func.invokeContract;
+    return { fn: call.functionName.toString(), args: call.args.map((a) => scValToNative(a) as unknown) };
+  }
+
+  test("builds create_group in the faucet's token, has Freighter sign it and answers the new group", async () => {
+    const { wallet, signed } = fakeFreighter();
+    const { rpc, prepared } = fakeRpc();
+    const { client } = setup(adminConfig(), { adminWallet: wallet, adminRpc: rpc });
+    expect(await client.createGroup(input())).toEqual({ signature: "create-tx", group: "4" });
+    expect(signed).toHaveLength(1);
+    expect(prepared[0].source).toBe(admin);
+    expect(callOf(prepared[0])).toEqual({
+      fn: "create_group",
+      args: ["Casa Nova", "http://localhost:3000/metadata/casa-ipe.json?value=500", demo6, 100_000_000n, 5, 300n, 200],
+    });
+  });
+
+  test("the quota goes on chain in the token's own decimals", async () => {
+    const { wallet } = fakeFreighter();
+    const { rpc, prepared } = fakeRpc();
+    const { client } = setup(adminConfig({ faucetToken: usdc7 }), { adminWallet: wallet, adminRpc: rpc });
+    await client.createGroup(input());
+    expect(callOf(prepared[0]).args.slice(2, 4)).toEqual([usdc7, 1_000_000_000n]);
+  });
+
+  test("only the contract's admin, through its Freighter wallet, and nothing reaches the RPC otherwise", async () => {
+    const { rpc, prepared } = fakeRpc();
+    const none = setup(adminConfig(), { adminRpc: rpc }).client;
+    expect(await codeOf(none.createGroup(input()))).toBe("Unauthorized");
+    const notAdmin = setup(adminConfig({ admin: Keypair.random().publicKey() }), { adminWallet: fakeFreighter().wallet, adminRpc: rpc }).client;
+    expect(await codeOf(notAdmin.createGroup(input()))).toBe("Unauthorized");
+    const otherOrganizer = setup(adminConfig(), { adminWallet: fakeFreighter().wallet, adminRpc: rpc }).client;
+    expect(await codeOf(otherOrganizer.createGroup(input({ organizer: Keypair.random().publicKey() })))).toBe("Unauthorized");
+    expect(prepared).toHaveLength(0);
+  });
+
+  test("the contract's own limits are checked before anything is signed", async () => {
+    const { wallet, signed } = fakeFreighter();
+    const { rpc, prepared } = fakeRpc();
+    const { client } = setup(adminConfig(), { adminWallet: wallet, adminRpc: rpc });
+    expect(await codeOf(client.createGroup(input({ name: "x".repeat(33) })))).toBe("NameTooLong");
+    expect(await codeOf(client.createGroup(input({ adminFeeBps: 1_001 })))).toBe("FeeTooHigh");
+    expect(prepared).toHaveLength(0);
+    expect(signed).toHaveLength(0);
+  });
+
+  test("a refusal in the simulation comes back as the contract's error", async () => {
+    const { wallet, signed } = fakeFreighter();
+    const { rpc } = fakeRpc({
+      prepareTransaction: () => Promise.reject(new Error("HostError: Error(Contract, #27)")),
+    });
+    const { client } = setup(adminConfig(), { adminWallet: wallet, adminRpc: rpc });
+    expect(await codeOf(client.createGroup(input()))).toBe("TokenNotSupported");
+    expect(signed).toHaveLength(0);
+  });
+
+  test("an admin account without XLM can't pay the fee", async () => {
+    const { wallet } = fakeFreighter();
+    const { rpc } = fakeRpc({ getAccount: () => Promise.reject(new Error("Account not found")) });
+    const { client } = setup(adminConfig(), { adminWallet: wallet, adminRpc: rpc });
+    expect(await codeOf(client.createGroup(input()))).toBe("NotEnoughXlm");
+  });
+
+  test("Freighter declining or on another network stops it before it's sent", async () => {
+    let sent = 0;
+    const { rpc } = fakeRpc({
+      sendTransaction: async () => {
+        sent++;
+        return { status: "PENDING", hash: "create-tx" };
+      },
+    });
+    const declined = fakeFreighter({ signTransaction: () => Promise.reject(new Error("The user rejected this request.")) }).wallet;
+    expect(await codeOf(setup(adminConfig(), { adminWallet: declined, adminRpc: rpc }).client.createGroup(input()))).toBe("UserRejected");
+    const elsewhere = fakeFreighter({ signTransaction: () => Promise.reject(new KotiziError("WalletWrongNetwork")) }).wallet;
+    expect(await codeOf(setup(adminConfig(), { adminWallet: elsewhere, adminRpc: rpc }).client.createGroup(input()))).toBe("WalletWrongNetwork");
+    expect(sent).toBe(0);
+  });
+
+  test("a transaction the network rejects for the fee reads as the admin's balance", async () => {
+    const { wallet } = fakeFreighter();
+    const { rpc } = fakeRpc({
+      sendTransaction: async () => ({ status: "ERROR", hash: "x", errorResult: { toXDR: () => "txInsufficientBalance" } }),
+    });
+    const { client } = setup(adminConfig(), { adminWallet: wallet, adminRpc: rpc });
+    expect(await codeOf(client.createGroup(input()))).toBe("NotEnoughXlm");
   });
 });
 

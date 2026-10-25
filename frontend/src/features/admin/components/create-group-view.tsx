@@ -18,6 +18,8 @@ import { GROUP_CONTENT, type GroupSlug } from "@/content/groups";
 import { formatPeriod, formatUsdc, usdc } from "@/lib/format";
 import { useSession } from "@/session/context";
 
+import { useAdminAddress } from "../hooks/use-admin";
+
 const MAX_FEE_PCT = MAX_FEE_BPS / 100;
 
 const PERIODS = [
@@ -108,10 +110,13 @@ function validate(form: Form, origin: string) {
   };
 }
 
-// Admin only: opens a new group (`create_group`). The admin's account signs and pays. Only the
-// admin reaches it (`AdminGate` in the admin layout).
+// Admin only: opens a new group (`create_group`). The admin's account signs and pays: the session's
+// own wallet (the mock) or the admin's Freighter wallet (Stellar). Only the admin reaches it
+// (`AdminGate` in the admin layout).
 export function CreateGroupView() {
-  const { address } = useSession();
+  const { adminWallet } = useSession();
+  const address = useAdminAddress();
+  const inFreighter = address != null && address === adminWallet?.address;
   const router = useRouter();
   const { run, pending } = useChainAction();
   const [form, setForm] = useState<Form>({
@@ -255,6 +260,7 @@ export function CreateGroupView() {
               <SurfaceRow label="Admin fee" value={`${input.adminFeeBps / 100}%`} />
               <SurfaceRow label="Network" value={network.name} />
               <SurfaceRow label="Network fee and storage rent" value="Paid by the admin account" />
+              {inFreighter && <SurfaceRow label="Approved in" value="Freighter" />}
             </SurfaceList>
           )}
           <div className="flex flex-col-reverse gap-2 sm:flex-row">

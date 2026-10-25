@@ -61,7 +61,7 @@ export function AccountMenu({ trigger, align = "end" }: { trigger: ReactElement;
               <Building2 /> Create group
             </DropdownMenuItem>
           )}
-          {kycApproved === false ? (
+          {session.walletOnly ? null : kycApproved === false ? (
             <DropdownMenuItem render={<Link href="/verify" />} className="justify-between">
               <span className="flex items-center gap-2">
                 <ShieldCheck /> Verify identity

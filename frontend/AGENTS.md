@@ -146,9 +146,20 @@ scope (roadmap only): marketplace, bids, default handling, real KYC provider, pr
   hash in, an ed25519 signature out). Privy has no external Stellar wallets. Without
   `NEXT_PUBLIC_PRIVY_APP_ID` the app uses a mock session. UI reads auth only through `useSession()`
   (`src/session/`).
-- **Wallet login link** (user decision, 2026-10-25): the landing keeps the quiet "Already have a
-  crypto wallet? Use it instead" link in the code, but only email login is offered for now
-  (`LOGIN_METHODS` in `src/session/context.ts`; the link shows when it lists `"wallet"`).
+- **Wallet login = the operator's Freighter sign-in** (user decision, 2026-10-25, "operator login"):
+  the landing's quiet "Already have a crypto wallet? Use it instead" link (shown when
+  `Session.loginMethods` has `"wallet"`: the Privy session, not the mock) connects Freighter and
+  signs in **outside Privy** (Privy has no external Stellar wallets; its own modal stays email only).
+  That account is `Session.walletOnly`: address = the Freighter address (kept in localStorage,
+  `session/wallet-session.ts`, while Freighter still shares it with the site; `Session.status` is
+  "loading" until Freighter answers after a reload), no email ("Signed in"), no access token and no
+  signer, no identity verification (`identityVerified` true; `useKyc` isn't read). The backend's
+  account routes don't know it, so it browses `/groups` and the group pages and, as the contract's
+  admin, creates groups (Freighter signs them); home, payments, draws, joining and the credit screen
+  show `MembersOnly`'s notice instead (`components/shell/members-only.tsx`, wrapped in each
+  `page.tsx`, so the screen never mounts). The landing sends it to `/groups`. No Freighter: the
+  status dialog says "Freighter not found". A wallet account for members (join, pay) would need the
+  backend to accept a wallet-signed login and Freighter's `signAuthEntry` in the relay: not built.
 - **Network fees and rent are the app's, never the user's**, through the **backend relay**. The
   wallet never signs a transaction envelope: `POST /v1/tx/prepare {fn, groupId, index?}` builds and
   simulates the call with the backend's sponsor as the transaction source and answers the
@@ -286,8 +297,8 @@ Plan (one commit per part, `bun run quality` and `bun run build` after each; bra
      longer than `drawUntilSettled`'s default wait (10 × 1.5 s).
 3. Privy Stellar session. **Done** (`src/session/privy-session.tsx`, helpers in
    `src/session/stellar-wallet.ts`, tested):
-   - Privy `loginMethods` come from `LOGIN_METHODS` (`session/context.ts`: `["email"]`), also exposed
-     as `Session.loginMethods`; the landing shows the wallet link only when it lists `"wallet"`.
+   - Privy's modal offers email only; `Session.loginMethods` says what the landing offers (Privy
+     session: email and the Freighter wallet sign-in, see "Auth and network fees"; mock: email).
    - `useEnsureStellarWallet`: in `useLogin`'s `onComplete` (after Privy's modal, on a login or a
      restored session), an account with no linked Stellar wallet (`needsStellarWallet`) gets its
      embedded one (`useCreateWallet({ chainType: "stellar" })` from `extended-chains`); once per
@@ -350,9 +361,33 @@ Plan (one commit per part, `bun run quality` and `bun run build` after each; bra
      threshold): on a short-period group the draw can start after the first payment and freeze the
      others' (`GroupNotOpen`). For demos where only "Draw now" should draw, run the backend with
      `KEEPER_ENABLED=false`.
-6. Admin group creation with Freighter: the admin connects Freighter on the admin screen, the app
-   builds `create_group` with `@stellar/stellar-sdk` (simulated on the RPC from `/v1/config`),
-   Freighter signs, the app sends it and waits for the result; a token picker from `/v1/config`.
+6. Admin group creation with Freighter. **Done** (tested):
+   - `Session.adminWallet` (`AdminWallet` in `session/context.ts`; `useFreighterWallet`,
+     `session/freighter-wallet.ts`, Privy session only, null in the mock): `available` (the extension
+     is there), `address` (read without a prompt when the site was allowed before), `connect()`
+     (`requestAccess`), `signTransaction(xdr, passphrase)` (checks Freighter's network first:
+     `WalletWrongNetwork`). `@stellar/freighter-api` is imported on demand; its `{ error }` answers are
+     thrown with their message, so a declined prompt is `UserRejected`.
+   - `features/admin`: `useAdminAddress` = the session's wallet when it is the admin (the mock: every
+     account), else the connected Freighter address when that is the admin; `useIsAdmin` from it, so
+     "Create group" shows for an admin whose Freighter was connected once. `AdminGate`: an account
+     that isn't the admin goes home, except in a browser with Freighter, which gets
+     `ConnectAdminWallet` ("Connect Freighter"; "isn't kotizi's admin" for another account). The
+     first visit is by URL (`/admin/groups/new`), unless the admin signs in with Freighter on the
+     landing (the wallet sign-in), which makes it the admin right away. The confirmation says
+     "Approved in · Freighter".
+   - `StellarKotiziClient.createGroup`: admin check (`Unauthorized` before any RPC call), the
+     contract's limits (`assertCreateGroupInput`), the faucet's token (the only one testnet users can
+     pay in; no currency picker), the quota in its decimals (`toTokenUnits`), then
+     `stellar/admin-tx.ts` (`submitCreateGroup`, imported on demand: the only module with
+     `@stellar/stellar-sdk`, 554 KB, outside every page's first load): builds `create_group` with the
+     admin as the source, `prepareTransaction` on the RPC from `/v1/config`, Freighter signs, send,
+     poll, and the group id from the return value. A simulation refusal names the contract's error
+     (`contractErrorFromHost`, `CONTRACT_ERROR_CODES` checked against errors.rs); an unfunded admin or
+     a fee it can't pay is `NotEnoughXlm`. The RPC is injectable (`adminRpc`) for tests.
+   - **Checked on testnet (2026-10-25)**: the client created group 4 ("Vila Cerrado") with the deployer
+     key standing in for Freighter, and read it back; a 10.01% fee was refused in the real simulation
+     (`FeeTooHigh`) before anything was signed. With Freighter itself: the user's test.
 7. End to end in the browser on testnet (Privy app with Stellar enabled, backend running).
 
 Facts to build on:

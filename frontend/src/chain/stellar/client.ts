@@ -1,17 +1,29 @@
 import { z } from "zod";
 
 import { createSerialQueue } from "@/lib/serial";
-import type { SessionSigner } from "@/session/context";
+import type { AdminWallet, SessionSigner } from "@/session/context";
 
 import { BackendError, type BackendApi } from "../api";
 import type { KotiziClient } from "../client";
+import { assertCreateGroupInput } from "../derive";
 import { KotiziError } from "../errors";
-import { membershipIdOf, parseGroupId, parseMembershipId } from "../ids";
+import { groupIdOf, membershipIdOf, parseGroupId, parseMembershipId } from "../ids";
 import { cachedGroupMetadata } from "../metadata";
-import type { Address, DrawStep, Group, GroupId, KycRecord, Membership, MembershipId, TxResult } from "../types";
+import type {
+  Address,
+  CreateGroupInput,
+  DrawStep,
+  Group,
+  GroupId,
+  KycRecord,
+  Membership,
+  MembershipId,
+  TxResult,
+} from "../types";
 import { toDrawStep } from "../views";
+import type { AdminRpc } from "./admin-tx";
 import { toStellarError } from "./errors";
-import { toAppUnits } from "./units";
+import { toAppUnits, toTokenUnits } from "./units";
 import {
   configViewSchema,
   drawViewSchema,
@@ -62,6 +74,10 @@ export class StellarKotiziClient implements KotiziClient {
       api: BackendApi;
       /** The session's Stellar wallet; null when signed out (reads still work). */
       signer: SessionSigner | null;
+      /** The admin's Freighter wallet, for group creation; null in sessions without one. */
+      adminWallet?: AdminWallet | null;
+      /** The RPC the admin's transaction goes to; tests pass a fake one. Default: the backend's `rpcUrl`. */
+      adminRpc?: (rpcUrl: string) => AdminRpc;
     },
   ) {}
 
@@ -199,8 +215,45 @@ export class StellarKotiziClient implements KotiziClient {
     });
   }
 
-  createGroup(): Promise<TxResult & { group: GroupId }> {
-    return notYet("createGroup");
+  /**
+   * The admin's own transaction (not relayed): the contract's checks first, then `create_group` is
+   * built and simulated on the RPC, signed by the admin's Freighter wallet (its own prompt) and sent;
+   * resolves once it lands, with the new group's id. The group's token is the faucet's, the one
+   * testnet users can be funded in (see `listGroups`); its quota is converted to that token's units.
+   */
+  createGroup(input: CreateGroupInput) {
+    return this.wrap(async (): Promise<TxResult & { group: GroupId }> => {
+      const wallet = this.deps.adminWallet;
+      const config = await this.getConfig();
+      if (!wallet?.address || wallet.address !== input.organizer || config.admin !== input.organizer) {
+        throw new KotiziError("Unauthorized");
+      }
+      // Never the public network, whatever the backend says.
+      if (config.networkPassphrase === PUBLIC_NETWORK_PASSPHRASE) throw new KotiziError("WalletWrongNetwork");
+      // Same checks, in the same order, as `create_group`.
+      assertCreateGroupInput(input);
+      const token = config.tokens.find((t) => t.token === config.faucetToken) ?? (config.tokens.length === 1 ? config.tokens[0] : undefined);
+      if (!token) throw new KotiziError("TokenNotSupported");
+
+      const { createAdminRpc, submitCreateGroup } = await import("./admin-tx");
+      const { hash, groupId } = await submitCreateGroup({
+        server: this.deps.adminRpc?.(config.rpcUrl) ?? createAdminRpc(config.rpcUrl),
+        networkPassphrase: config.networkPassphrase,
+        contractId: config.contractId,
+        admin: config.admin,
+        call: {
+          name: input.name,
+          uri: input.uri,
+          token: token.token,
+          quota: toTokenUnits(input.quotaAmount, token.decimals),
+          maxMembers: input.maxMembers,
+          periodSecs: input.periodSecs,
+          adminFeeBps: input.adminFeeBps,
+        },
+        sign: (transactionXdr) => wallet.signTransaction(transactionXdr, config.networkPassphrase),
+      });
+      return { signature: hash, group: groupIdOf(groupId) };
+    });
   }
 
   readonly testing = {
@@ -334,7 +387,3 @@ function hexOf(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Group creation arrives with the admin's Freighter wallet (part 6 of the Stellar plan, AGENTS.md). */
-function notYet(action: string): Promise<never> {
-  return Promise.reject(new KotiziError("TransactionFailed", { cause: new Error(`${action} isn't available on Stellar yet`) }));
-}

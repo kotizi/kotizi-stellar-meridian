@@ -24,9 +24,10 @@ export function ConnectView() {
     if (signingOut) {
       if (session.status === "signedOut") endSignOut();
     } else if (session.status === "signedIn") {
-      router.replace(session.newAccountPending ? "/verify" : "/home");
+      // The operator's wallet account has no member screens: it starts at the groups.
+      router.replace(session.walletOnly ? "/groups" : session.newAccountPending ? "/verify" : "/home");
     }
-  }, [signingOut, session.status, session.newAccountPending, router]);
+  }, [signingOut, session.status, session.newAccountPending, session.walletOnly, router]);
 
   return (
     <main className="relative isolate flex min-h-svh flex-1 flex-col overflow-hidden">
