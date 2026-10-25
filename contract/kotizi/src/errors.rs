@@ -21,4 +21,13 @@ pub enum Error {
     UnsupportedToken = 15,
     TooManyGroups = 16,
     MathOverflow = 17,
+    DrawNotDue = 18,
+    NoEligibleMembers = 19,
+    DrawNotExpired = 20,
+    NoDrawPending = 21,
+    DrawTooEarly = 22,
+    InvalidSecret = 23,
+    InsufficientVault = 24,
+    NotWinner = 25,
+    AlreadyClaimed = 26,
 }

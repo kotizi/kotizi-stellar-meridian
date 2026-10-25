@@ -7,6 +7,11 @@ pub const MAX_NAME_LEN: u32 = 32;
 pub const MAX_URI_LEN: u32 = 200;
 pub const TOKEN_DECIMALS: u32 = 6;
 /// Group ids share the NFT token id (`u32`) with the cota index: `(group_id << 8) | index`.
+/// `settle_draw` needs `sequence > commit_ledger`, with `commit_ledger = sequence_at_request + COMMIT_DELAY`.
+pub const COMMIT_DELAY: u32 = 3;
+/// A pending draw may be requested again once `sequence > commit_ledger + COMMIT_EXPIRY` (~1 h at 5 s/ledger).
+pub const COMMIT_EXPIRY: u32 = 720;
+pub const BPS_DENOMINATOR: i128 = 10_000;
 pub const MAX_GROUP_ID: u32 = (1 << 24) - 1;
 
 #[contracttype]

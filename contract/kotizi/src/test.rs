@@ -5,11 +5,12 @@ use soroban_sdk::{
         storage::{Instance as _, Persistent as _},
         Address as _, Ledger, MockAuth, MockAuthInvoke,
     },
-    Address, Env, IntoVal, String,
+    Address, Bytes, BytesN, Env, IntoVal, String,
 };
 use stellar_tokens::non_fungible::NonFungibleTokenClient;
 use test_usdc::{TestUsdc, TestUsdcClient};
 
+use crate::types::{COMMIT_DELAY, COMMIT_EXPIRY};
 use crate::{Error, Kotizi, KotiziClient, Status};
 
 const QUOTA: i128 = 100_000_000; // 100 USDC
@@ -321,4 +322,352 @@ fn entries_are_kept_alive_to_the_network_maximum() {
             max
         );
     });
+}
+
+// ------------------------------------------------------------------ draws and prizes
+
+fn secret(e: &Env, n: u8) -> BytesN<32> {
+    BytesN::from_array(e, &[n; 32])
+}
+
+fn commitment(e: &Env, secret: &BytesN<32>) -> BytesN<32> {
+    e.crypto().sha256(&Bytes::from(secret.clone())).to_bytes()
+}
+
+impl Setup<'_> {
+    fn advance(&self, ledgers: u32, secs: u64) {
+        self.e.ledger().with_mut(|l| {
+            l.sequence_number += ledgers;
+            l.timestamp += secs;
+        });
+    }
+
+    /// A full group of `n` members (one cota each) with plenty of funds, already past its first draw date.
+    fn full_group(&self, n: u32) -> (u32, std::vec::Vec<Address>) {
+        let id = self.group(n);
+        let members: std::vec::Vec<Address> = (0..n).map(|_| self.member(QUOTA * 20)).collect();
+        for m in &members {
+            self.kotizi.join_group(&id, m);
+        }
+        self.advance(1, 61);
+        (id, members)
+    }
+
+    fn pay_all(&self, id: u32, n: u32) {
+        for i in 0..n {
+            self.kotizi.pay_quota(&id, &i);
+        }
+    }
+
+    /// Commit, wait out the delay, reveal. Returns the winner's index.
+    fn draw(&self, id: u32, committer: &Address, n: u8) -> u32 {
+        let sec = secret(&self.e, n);
+        self.kotizi
+            .request_draw(&id, committer, &commitment(&self.e, &sec));
+        self.advance(COMMIT_DELAY + 1, 0);
+        self.kotizi.settle_draw(&id, &sec);
+        self.kotizi.get_group(&id).last_winner_index
+    }
+}
+
+#[test]
+fn draw_cannot_be_requested_before_it_is_due_or_without_payments() {
+    let s = setup();
+    let id = s.group(3);
+    let keeper = Address::generate(&s.e);
+    let c = commitment(&s.e, &secret(&s.e, 1));
+    let m = s.member(QUOTA);
+    s.kotizi.join_group(&id, &m);
+    s.kotizi.pay_quota(&id, &0);
+    // paid, but the date has not come
+    assert_eq!(
+        s.kotizi.try_request_draw(&id, &keeper, &c),
+        Err(Ok(Error::DrawNotDue.into()))
+    );
+    s.advance(1, 61);
+    // due, but nobody eligible in another group
+    let empty = s.group(3);
+    s.advance(1, 61);
+    assert_eq!(
+        s.kotizi.try_request_draw(&empty, &keeper, &c),
+        Err(Ok(Error::NoEligibleMembers.into()))
+    );
+    assert_eq!(s.kotizi.get_group(&empty).status, Status::Open);
+    s.kotizi.request_draw(&id, &keeper, &c);
+    assert_eq!(s.kotizi.get_group(&id).status, Status::DrawPending);
+}
+
+#[test]
+fn settle_needs_the_commit_delay_the_right_secret_and_the_committer() {
+    let s = setup();
+    let (id, _) = s.full_group(3);
+    s.pay_all(id, 3);
+    let keeper = Address::generate(&s.e);
+    let sec = secret(&s.e, 7);
+    s.kotizi.request_draw(&id, &keeper, &commitment(&s.e, &sec));
+
+    // same ledger as the request: too early
+    assert_eq!(
+        s.kotizi.try_settle_draw(&id, &sec),
+        Err(Ok(Error::DrawTooEarly.into()))
+    );
+    s.advance(COMMIT_DELAY, 0);
+    assert_eq!(
+        s.kotizi.try_settle_draw(&id, &sec),
+        Err(Ok(Error::DrawTooEarly.into()))
+    ); // sequence == commit_ledger
+    s.advance(1, 0);
+
+    // wrong secret
+    assert_eq!(
+        s.kotizi.try_settle_draw(&id, &secret(&s.e, 8)),
+        Err(Ok(Error::InvalidSecret.into()))
+    );
+    // right secret, signed by someone else
+    let other = Address::generate(&s.e);
+    s.e.set_auths(&[]);
+    s.e.mock_auths(&[MockAuth {
+        address: &other,
+        invoke: &MockAuthInvoke {
+            contract: &s.kotizi.address,
+            fn_name: "settle_draw",
+            args: (id, &sec).into_val(&s.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(s.kotizi.try_settle_draw(&id, &sec).is_err());
+    assert_eq!(s.kotizi.get_group(&id).status, Status::DrawPending);
+
+    s.e.mock_all_auths();
+    s.kotizi.settle_draw(&id, &sec);
+    assert_eq!(s.kotizi.get_group(&id).status, Status::Open);
+}
+
+#[test]
+fn settle_cannot_be_replayed() {
+    let s = setup();
+    let (id, _) = s.full_group(3);
+    s.pay_all(id, 3);
+    let keeper = Address::generate(&s.e);
+    let winner = s.draw(id, &keeper, 1);
+    let before = s.kotizi.get_group(&id);
+    assert_eq!(before.round, 1);
+    assert_eq!(
+        s.kotizi.try_settle_draw(&id, &secret(&s.e, 1)),
+        Err(Ok(Error::NoDrawPending.into()))
+    );
+    assert_eq!(s.kotizi.get_group(&id), before);
+    assert_eq!(s.kotizi.get_prize(&id, &winner).unwrap().gross, QUOTA * 3);
+}
+
+#[test]
+fn payments_freeze_while_a_draw_is_pending() {
+    let s = setup();
+    let (id, _) = s.full_group(3);
+    s.kotizi.pay_quota(&id, &0);
+    let keeper = Address::generate(&s.e);
+    s.kotizi
+        .request_draw(&id, &keeper, &commitment(&s.e, &secret(&s.e, 1)));
+    assert_eq!(
+        s.kotizi.try_pay_quota(&id, &1),
+        Err(Ok(Error::GroupNotOpen.into()))
+    );
+}
+
+#[test]
+fn a_stalled_commit_can_be_replaced_only_after_it_expires() {
+    let s = setup();
+    let (id, _) = s.full_group(3);
+    s.pay_all(id, 3);
+    let (silent, backup) = (Address::generate(&s.e), Address::generate(&s.e));
+    let old = secret(&s.e, 1);
+    s.kotizi.request_draw(&id, &silent, &commitment(&s.e, &old));
+    let commit_ledger = s.kotizi.get_group(&id).commit_ledger;
+
+    let new = secret(&s.e, 2);
+    let c2 = commitment(&s.e, &new);
+    s.advance(COMMIT_EXPIRY, 0); // sequence == commit_ledger + EXPIRY - DELAY, still inside the window
+    assert_eq!(
+        s.kotizi.try_request_draw(&id, &backup, &c2),
+        Err(Ok(Error::DrawNotExpired.into()))
+    );
+    s.e.ledger()
+        .with_mut(|l| l.sequence_number = commit_ledger + COMMIT_EXPIRY);
+    assert_eq!(
+        s.kotizi.try_request_draw(&id, &backup, &c2),
+        Err(Ok(Error::DrawNotExpired.into()))
+    );
+    s.advance(1, 0);
+    s.kotizi.request_draw(&id, &backup, &c2);
+
+    // the replaced secret no longer works; the new committer settles
+    s.advance(COMMIT_DELAY + 1, 0);
+    assert_eq!(
+        s.kotizi.try_settle_draw(&id, &old),
+        Err(Ok(Error::InvalidSecret.into()))
+    );
+    s.kotizi.settle_draw(&id, &new);
+    assert_eq!(s.kotizi.get_group(&id).round, 1);
+}
+
+#[test]
+fn only_paying_cotas_can_win_and_a_cota_wins_once() {
+    let s = setup();
+    let (id, _) = s.full_group(3);
+    let keeper = Address::generate(&s.e);
+    s.kotizi.pay_quota(&id, &1); // only cota 1 paid
+    assert_eq!(s.draw(id, &keeper, 1), 1);
+    assert_eq!(s.kotizi.get_prize(&id, &1).unwrap().gross, QUOTA);
+
+    // round 2: cota 1 pays again but has already won, so nobody is eligible
+    s.advance(1, 61);
+    s.kotizi.pay_quota(&id, &1);
+    let c = commitment(&s.e, &secret(&s.e, 2));
+    assert_eq!(
+        s.kotizi.try_request_draw(&id, &keeper, &c),
+        Err(Ok(Error::NoEligibleMembers.into()))
+    );
+    // once another cota pays, the draw proceeds and it is the only candidate
+    s.kotizi.pay_quota(&id, &2);
+    assert_eq!(s.draw(id, &keeper, 2), 2);
+    assert_eq!(s.kotizi.get_prize(&id, &2).unwrap().gross, QUOTA * 2);
+}
+
+#[test]
+fn full_group_runs_to_completion_and_every_prize_is_paid_out() {
+    let s = setup();
+    let (id, members) = s.full_group(3);
+    let keeper = Address::generate(&s.e);
+    let mut winners = std::vec::Vec::new();
+    for round in 0..3u32 {
+        s.pay_all(id, 3);
+        winners.push(s.draw(id, &keeper, round as u8 + 1));
+        s.advance(1, 61);
+    }
+    winners.sort();
+    assert_eq!(winners, std::vec![0, 1, 2]); // each cota won exactly once
+    let g = s.kotizi.get_group(&id);
+    assert_eq!(
+        (g.status, g.round, g.won_bitmap),
+        (Status::Completed, 3, 0b111)
+    );
+    assert_eq!(g.unclaimed_total, QUOTA * 9);
+    assert_eq!(g.vault, QUOTA * 9);
+
+    // completed: no more draws, no more payments
+    let c = commitment(&s.e, &secret(&s.e, 9));
+    assert_eq!(
+        s.kotizi.try_request_draw(&id, &keeper, &c),
+        Err(Ok(Error::GroupNotOpen.into()))
+    );
+    assert_eq!(
+        s.kotizi.try_pay_quota(&id, &0),
+        Err(Ok(Error::GroupNotOpen.into()))
+    );
+
+    // claims after completion; fee is 2% of each 3 x QUOTA prize
+    let fee = QUOTA * 3 * 200 / 10_000;
+    for (i, m) in members.iter().enumerate() {
+        let before = s.usdc.balance(m);
+        s.kotizi.claim_prize(&id, &(i as u32));
+        assert_eq!(s.usdc.balance(m), before + QUOTA * 3 - fee);
+    }
+    assert_eq!(s.usdc.balance(&s.admin), 3 * fee);
+    assert_eq!(s.usdc.balance(&s.kotizi.address), 0);
+    let g = s.kotizi.get_group(&id);
+    assert_eq!((g.unclaimed_bitmap, g.unclaimed_total, g.vault), (0, 0, 0));
+}
+
+#[test]
+fn an_unclaimed_prize_never_blocks_the_next_draw() {
+    let s = setup();
+    let (id, _) = s.full_group(3);
+    let keeper = Address::generate(&s.e);
+    s.pay_all(id, 3);
+    let first = s.draw(id, &keeper, 1);
+    s.advance(1, 61);
+    s.pay_all(id, 3);
+    let second = s.draw(id, &keeper, 2);
+    assert_ne!(first, second);
+    let g = s.kotizi.get_group(&id);
+    assert_eq!(g.unclaimed_total, QUOTA * 6);
+    assert_eq!(g.vault, QUOTA * 6);
+    s.kotizi.claim_prize(&id, &first); // the old prize is still claimable
+    assert_eq!(s.kotizi.get_group(&id).vault, QUOTA * 3);
+}
+
+#[test]
+fn claim_rules_non_winner_double_claim_and_owner_only() {
+    let s = setup();
+    let (id, members) = s.full_group(3);
+    let keeper = Address::generate(&s.e);
+    // nobody has won yet
+    assert_eq!(
+        s.kotizi.try_claim_prize(&id, &0),
+        Err(Ok(Error::NotWinner.into()))
+    );
+    assert_eq!(
+        s.kotizi.try_claim_prize(&id, &9),
+        Err(Ok(Error::CotaNotFound.into()))
+    );
+    s.pay_all(id, 3);
+    let w = s.draw(id, &keeper, 1);
+    let loser = (w + 1) % 3;
+    assert_eq!(
+        s.kotizi.try_claim_prize(&id, &loser),
+        Err(Ok(Error::NotWinner.into()))
+    );
+
+    // signed by someone who does not own the winning cota: rejected, nothing moves
+    let thief = Address::generate(&s.e);
+    s.e.set_auths(&[]);
+    s.e.mock_auths(&[MockAuth {
+        address: &thief,
+        invoke: &MockAuthInvoke {
+            contract: &s.kotizi.address,
+            fn_name: "claim_prize",
+            args: (id, w).into_val(&s.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(s.kotizi.try_claim_prize(&id, &w).is_err());
+    assert_eq!(s.usdc.balance(&thief), 0);
+    s.e.mock_all_auths();
+
+    // the prize follows the NFT: the new owner claims
+    let buyer = s.member(0);
+    s.nft
+        .transfer(&members[w as usize], &buyer, &s.kotizi.token_id_of(&id, &w));
+    let fee = QUOTA * 3 * 200 / 10_000;
+    s.kotizi.claim_prize(&id, &w);
+    assert_eq!(s.usdc.balance(&buyer), QUOTA * 3 - fee);
+    assert_eq!(
+        s.kotizi.try_claim_prize(&id, &w),
+        Err(Ok(Error::AlreadyClaimed.into()))
+    );
+    assert_eq!(s.usdc.balance(&buyer), QUOTA * 3 - fee);
+}
+
+#[test]
+fn draws_on_a_partial_group_wait_for_new_joiners() {
+    let s = setup();
+    let id = s.group(3);
+    let m = s.member(QUOTA * 10);
+    s.kotizi.join_group(&id, &m);
+    s.advance(1, 61);
+    let keeper = Address::generate(&s.e);
+    s.kotizi.pay_quota(&id, &0);
+    assert_eq!(s.draw(id, &keeper, 1), 0);
+    s.advance(1, 61);
+    s.kotizi.pay_quota(&id, &0);
+    let c = commitment(&s.e, &secret(&s.e, 2));
+    assert_eq!(
+        s.kotizi.try_request_draw(&id, &keeper, &c),
+        Err(Ok(Error::NoEligibleMembers.into()))
+    );
+    // a new member joins, pays, and the draw moves again
+    let late = s.member(QUOTA);
+    assert_eq!(s.kotizi.join_group(&id, &late), 1);
+    s.kotizi.pay_quota(&id, &1);
+    assert_eq!(s.draw(id, &keeper, 2), 1);
 }
