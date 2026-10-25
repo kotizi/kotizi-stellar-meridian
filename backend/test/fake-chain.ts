@@ -16,6 +16,8 @@ import { StellarTxError } from '../src/stellar/errors.js';
 export const PASSPHRASE = Networks.TESTNET;
 export const CONTRACT = StrKey.encodeContract(Buffer.alloc(32, 7));
 export const TOKEN = StrKey.encodeContract(Buffer.alloc(32, 9));
+/** A second enabled token (7 decimals, like the real USDC / USDT0). */
+export const TOKEN_7 = StrKey.encodeContract(Buffer.alloc(32, 10));
 export const newKey = () => Keypair.random();
 
 export function group(over: Partial<RawGroup> = {}): RawGroup {
@@ -23,6 +25,7 @@ export function group(over: Partial<RawGroup> = {}): RawGroup {
     id: 0,
     name: 'Casa Demo',
     uri: 'https://example.com/m.json',
+    token: TOKEN,
     quota: 100_000_000n,
     period: 60n,
     nextDrawTs: 1_000n,
@@ -60,6 +63,7 @@ export class FakeChain implements Chain {
   kyc = new Set<string>();
   accounts = new Set<string>();
   usdc = new Map<string, bigint>();
+  balances7 = new Map<string, bigint>();
   xlm = new Map<string, bigint>();
   sent: Sent[] = [];
   failSimulationWith: string | undefined;
@@ -67,7 +71,13 @@ export class FakeChain implements Chain {
   private nonce = 1n;
 
   async config(): Promise<ContractConfig> {
-    return { admin: this.admin, kycAuthority: this.kycAuthority, token: TOKEN };
+    return { admin: this.admin, kycAuthority: this.kycAuthority };
+  }
+  async tokens() {
+    return [
+      { token: TOKEN, decimals: 6 },
+      { token: TOKEN_7, decimals: 7 },
+    ];
   }
   async ledger() {
     return this.ledgerSeq;
@@ -93,8 +103,8 @@ export class FakeChain implements Chain {
   async isKyc(w: string) {
     return this.kyc.has(w);
   }
-  async tokenBalance(w: string) {
-    return this.usdc.get(w) ?? 0n;
+  async tokenBalance(w: string, token: string) {
+    return (token === TOKEN ? this.usdc.get(w) : this.balances7.get(w)) ?? 0n;
   }
   async accountExists(w: string) {
     return this.accounts.has(w);
@@ -124,7 +134,7 @@ export class FakeChain implements Chain {
                 new xdr.SorobanAuthorizedInvocation({
                   function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(
                     new xdr.InvokeContractArgs({
-                      contractAddress: new Address(TOKEN).toScAddress(),
+                      contractAddress: new Address(this.groupList.find((g) => g.id === groupId)?.token ?? TOKEN).toScAddress(),
                       functionName: 'transfer',
                       args: [new Address(wallet).toScVal(), new Address(CONTRACT).toScVal(), nativeToScVal(100_000_000n, { type: 'i128' })],
                     }),

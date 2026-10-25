@@ -24,9 +24,10 @@ use stellar_tokens::non_fungible::{Base, Compose, NonFungibleToken};
 pub use errors::Error;
 use events::{
     DrawRequested, DrawSettled, GroupCreated, KycApproved, MemberJoined, PrizeClaimed, QuotaPaid,
+    TokenAdded,
 };
 use types::*;
-pub use types::{Config, DataKey, Group, Prize, Status, Winner};
+pub use types::{Config, DataKey, Group, Prize, Status, TokenInfo, Winner};
 
 #[contract]
 pub struct Kotizi;
@@ -50,6 +51,14 @@ fn load_group(e: &Env, group_id: u32) -> Result<Group, Error> {
         .ok_or(Error::GroupNotFound)?;
     ttl::extend_persistent(e, &key);
     Ok(group)
+}
+
+fn load_tokens(e: &Env) -> soroban_sdk::Vec<TokenInfo> {
+    ttl::extend_instance(e);
+    e.storage()
+        .instance()
+        .get(&DataKey::Tokens)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(e))
 }
 
 fn save_group(e: &Env, group_id: u32, group: &Group) {
@@ -80,24 +89,18 @@ fn or_panic<T>(e: &Env, r: Result<T, Error>) -> T {
 
 #[contractimpl]
 impl Kotizi {
-    pub fn __constructor(
-        e: &Env,
-        admin: Address,
-        kyc_authority: Address,
-        token: Address,
-    ) -> Result<(), Error> {
-        if TokenClient::new(e, &token).decimals() != TOKEN_DECIMALS {
-            return Err(Error::InvalidTokenDecimals);
-        }
+    pub fn __constructor(e: &Env, admin: Address, kyc_authority: Address) {
         e.storage().instance().set(
             &DataKey::Config,
             &Config {
                 admin,
                 kyc_authority,
-                token,
             },
         );
         e.storage().instance().set(&DataKey::GroupCount, &0u32);
+        e.storage()
+            .instance()
+            .set(&DataKey::Tokens, &soroban_sdk::Vec::<TokenInfo>::new(e));
         Base::set_metadata(
             e,
             String::from_str(e, ""),
@@ -105,7 +108,6 @@ impl Kotizi {
             String::from_str(e, "COTA"),
         );
         ttl::extend_instance(e);
-        Ok(())
     }
 
     // -------------------------------------------------------------- admin
@@ -123,11 +125,38 @@ impl Kotizi {
         Ok(())
     }
 
-    /// Admin only. Returns the new group id.
+    /// Admin only. Enables a SEP-41 token (a Stellar Asset Contract such as USDC, or any other token
+    /// contract) for new groups. Its decimals are read once and published with the token: quotas are in
+    /// its base units. Groups already created are never affected. No removal: a group keeps its token.
+    pub fn add_token(e: &Env, token: Address) -> Result<(), Error> {
+        config(e).admin.require_auth();
+        let mut tokens = load_tokens(e);
+        if tokens.iter().any(|t| t.token == token) {
+            return Err(Error::TokenAlreadyAdded);
+        }
+        if tokens.len() >= MAX_TOKENS {
+            return Err(Error::TooManyTokens);
+        }
+        let decimals = TokenClient::new(e, &token).decimals();
+        if decimals > MAX_TOKEN_DECIMALS {
+            return Err(Error::InvalidTokenDecimals);
+        }
+        tokens.push_back(TokenInfo {
+            token: token.clone(),
+            decimals,
+        });
+        e.storage().instance().set(&DataKey::Tokens, &tokens);
+        TokenAdded { token, decimals }.publish(e);
+        Ok(())
+    }
+
+    /// Admin only. `token` must have been enabled with `add_token`. Returns the new group id.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_group(
         e: &Env,
         name: String,
         uri: String,
+        token: Address,
         quota: i128,
         max_members: u32,
         period: u64,
@@ -139,6 +168,9 @@ impl Kotizi {
         }
         if uri.len() > MAX_URI_LEN {
             return Err(Error::UriTooLong);
+        }
+        if !load_tokens(e).iter().any(|t| t.token == token) {
+            return Err(Error::TokenNotSupported);
         }
         if quota <= 0 {
             return Err(Error::InvalidQuota);
@@ -169,6 +201,7 @@ impl Kotizi {
         let group = Group {
             name: name.clone(),
             uri,
+            token: token.clone(),
             quota,
             period,
             next_draw_ts,
@@ -189,6 +222,7 @@ impl Kotizi {
         GroupCreated {
             group_id,
             name,
+            token,
             quota,
             max_members,
             period,
@@ -251,7 +285,7 @@ impl Kotizi {
         ttl::extend_persistent(e, &paid_key);
         save_group(e, group_id, &group);
 
-        let token = TokenClient::new(e, &config(e).token);
+        let token = TokenClient::new(e, &group.token);
         let this = e.current_contract_address();
         let before = token.balance(&this);
         token.transfer(&owner, &this, &group.quota);
@@ -418,7 +452,7 @@ impl Kotizi {
         save_group(e, group_id, &group);
 
         let cfg = config(e);
-        let token = TokenClient::new(e, &cfg.token);
+        let token = TokenClient::new(e, &group.token);
         let this = e.current_contract_address();
         if token.balance(&this) < prize.gross {
             return Err(Error::InsufficientVault);
@@ -483,6 +517,11 @@ impl Kotizi {
 
     pub fn config(e: &Env) -> Config {
         config(e)
+    }
+
+    /// The tokens groups can be created in, with their decimals.
+    pub fn tokens(e: &Env) -> soroban_sdk::Vec<TokenInfo> {
+        load_tokens(e)
     }
 
     pub fn is_kyc(e: &Env, wallet: Address) -> bool {

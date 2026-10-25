@@ -31,9 +31,13 @@ amend as you did in the reference plan.
 3. **[RISK] A Stellar account must exist on ledger before it can authorize anything.** A fresh Privy wallet has no ledger entry,
    so `require_auth` for it fails. The backend must activate accounts (sponsor-paid `CreateAccount`, funded with the base
    reserve) at onboarding, next to KYC. Unverified in detail; retired by one end-to-end test on testnet (task 5/6).
-4. **[DEVIATION] Token = our own SEP-41 test token contract, not a classic-asset SAC.** A SAC needs a trustline (extra reserve and
-   an extra sponsored operation) for every wallet. A plain contract token has balances in contract storage, no trustlines. 6
-   decimals, admin-mint (faucet). The kickoff allowed either.
+4. **[DEVIATION, extended on `feat/multi-token`: several tokens] Tokens are chosen per group from an admin allowlist.** Our own SEP-41
+   test token (6 decimals, admin-mint faucet, no trustlines) stays the demo default, and real tokens can be enabled next to it:
+   Circle's testnet USDC (classic asset `USDC:GBBD47IF...LFLA5`, SAC `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`,
+   **7 decimals**, verified on testnet) and USDT0 (mainnet only today, 7 decimals; no testnet deployment found). The contract
+   therefore no longer assumes 6 decimals: it stores each token's decimals when the admin enables it, and quotas are in the
+   token's base units. **Real (SAC) tokens need a trustline on every account that holds them**, the members and also the admin
+   (the fee recipient): see *Risks of real tokens*.
 5. **Persistent storage expires.** Soroban entries have a TTL and get archived. Not in the kickoff; handled in *TTL policy*.
 6. **One contract, not two. [VERIFIED 2026-10-25 against OZ stellar-contracts 0.8.0 source]** The Kotizi contract implements
    `NonFungibleToken` (`type ContractType = Compose<(Base,)>`). `token_id` is `u32`, so `token_id = (group_id << 8) | index`
@@ -53,14 +57,15 @@ The prize is paid in test USDC from the collected pool; "real estate" is narrati
 
 ## Contract state
 
-Constructor (`__constructor`, runs at deploy, so there is no first-come `initialize`): `admin`, `kyc_authority`, `token`
-(address of the test token). Fixed afterwards.
+Constructor (`__constructor`, runs at deploy, so there is no first-come `initialize`): `admin`, `kyc_authority`. Fixed
+afterwards. Tokens are enabled later with `add_token` (never removed: a group keeps its token).
 
 Storage keys (`#[contracttype] enum DataKey`), one entry per key, never an array of 64 inside one entry:
 
 | Key | Storage | Value |
 |---|---|---|
-| `Config` | instance | `{admin, kyc_authority, token}` |
+| `Config` | instance | `{admin, kyc_authority}` |
+| `Tokens` | instance | `Vec<TokenInfo{token, decimals}>`, at most 8 |
 | `GroupCount` | instance | `u32` |
 | `Kyc(Address)` | persistent | `u64` approved_at |
 | `Group(u32)` | persistent | `Group` (below) |
@@ -70,7 +75,7 @@ Storage keys (`#[contracttype] enum DataKey`), one entry per key, never an array
 
 `Group`: name, uri, quota `i128`, period `u64`, next_draw_ts `u64`, admin_fee_bps `u32`, max_members `u32` (2..=64),
 members_joined, round, status (`Open | DrawPending | Completed`), `paid_bitmap: u64`, `won_bitmap: u64`,
-`unclaimed_bitmap: u64`, `unclaimed_total: i128`, `vault: i128` (this group's share of the contract's token balance),
+`token: Address`, `unclaimed_bitmap: u64`, `unclaimed_total: i128`, `vault: i128` (this group's share of the contract's balance of its token),
 last_winner_index, `draw_round: u64` (the drand round that decides the pending draw, 0 when none).
 `group_id` is `u32` and must stay below 2^24 so it fits the NFT token id.
 
@@ -118,9 +123,10 @@ function runs; simulation fills that list, the transaction pays. A restored entr
 
 | # | Function | Auth | Notes |
 |---|---|---|---|
-| 1 | `__constructor(admin, kyc_authority, token)` | - | validates token has 6 decimals |
+| 1 | `__constructor(admin, kyc_authority)` | - | empty token allowlist |
+| 1b | `add_token(token)` | `admin` | reads `decimals()` (<= 18), rejects duplicates, at most 8 tokens; `tokens()` lists them |
 | 2 | `approve_kyc(wallet)` | `kyc_authority` | sets `Kyc`; error if already approved |
-| 3 | `create_group(name, uri, quota, max_members, period, admin_fee_bps)` | `admin` | fee <= 10%, name <= 32 bytes, uri <= 200 bytes, quota > 0, period > 0 |
+| 3 | `create_group(name, uri, token, quota, max_members, period, admin_fee_bps)` | `admin` | `token` must be enabled; fee <= 10%, name <= 32 bytes, uri <= 200 bytes, quota > 0, period > 0 |
 | 4 | `join_group(group_id, member)` | `member` | needs `Kyc(member)`; index = members_joined; not full; mints the NFT to `member` |
 | 5 | `pay_quota(group_id, index)` | current NFT owner | status Open; one payment per round; pulls `quota` from the owner with `token.transfer`; verifies the contract's balance rose by exactly `quota` (rejects fee-on-transfer tokens) |
 | 6 | `request_draw(group_id)` | none (permissionless) | after `next_draw_ts`; >= 1 eligible; status -> DrawPending; stores `draw_round` (a drand round 10 rounds ahead). Re-callable once `timestamp > round_time(draw_round) + DRAW_EXPIRY_SECS` |
@@ -207,11 +213,25 @@ namespacing. Keeper: poll due groups, `request_draw`; once the drand round exist
 `KotiziClient`. Raw-sign flow in `privy-session.tsx` (currently `signer: null`). `src/chain/stellar/generated/` is gitignored
 until frozen. The mock keeps working in the meantime.
 
+## Risks of real tokens (USDC, USDT0)  *(feat/multi-token)*
+
+- **Trustlines.** A classic asset needs a `ChangeTrust` on each holding account. Members: the transaction needs the member's own
+  signature (it cannot be relayed like an auth entry), so onboarding needs one user-signed classic transaction through the
+  Privy raw-sign flow, sponsored reserve. **Not implemented**; until then members must hold the trustline already.
+  The **admin** receives the fee: without a trustline, `claim_prize` in that token reverts when `fee > 0`, blocking every
+  claim. The admin must hold a trustline before the first group in a real token (or the group is created with fee 0).
+- **Issuer controls.** USDT0 has clawback and revocable flags; USDC can freeze accounts. A frozen winner's claim reverts
+  (retryable, nobody else is affected); a clawback can break the vault of a group (`InsufficientVault`, never over-pays).
+- **Decimals are per token** (7 for both); the API exposes them with each group and the app must format with them.
+- **Testnet USDC** comes from Circle's faucet (faucet.circle.com), not from our faucet, which only mints the demo token.
+- **USDT0** has no testnet deployment found: it can be enabled on mainnet only, which is out of scope. A look-alike test token
+  can stand in to test a 7-decimal group.
+
 ## Security checklist (every function)
 
 `require_auth` on every authority (and the *right* address: NFT owner for pay/claim; `request_draw`/`settle_draw` take no signer on purpose); checked arithmetic on
 every `i128`/`u32`; Soroban forbids contract re-entry by default, and state is still written before the token transfer; token
-calls go only to the configured token address; pay-in balance delta verified; no double pay/claim/settle; draw cannot be
+calls go only to the group's own token (enabled by the admin); pay-in balance delta verified; no double pay/claim/settle; draw cannot be
 settled before its drand round exists or without that round's valid signature, nor replayed (the winner binds the group and the beacon is per round);
 `vault >= unclaimed_total + pool` before recording a prize; recipient-KYC on NFT transfer; TTL extended on every touched entry;
 negative tests for each.

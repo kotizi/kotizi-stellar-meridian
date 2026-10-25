@@ -17,6 +17,8 @@ const schema = z.object({
 
   KYC_MODE: z.enum(['off', 'auto']).default('off'),
   FAUCET_ENABLED: bool.default(false),
+  /** The test token (C...) the faucet mints; MINT_KEYFILE must be its admin. Real tokens (USDC, USDT0) are never minted. */
+  FAUCET_TOKEN: z.string().regex(/^C[A-Z2-7]{55}$/).optional(),
   FAUCET_AMOUNT_USDC: z.coerce.number().positive().default(1000),
 
   // Postgres in production; embedded PGlite when unset.
@@ -73,5 +75,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
   if (cfg.KYC_MODE === 'auto' && !cfg.KYC_KEYFILE) throw new Error('KYC_MODE=auto needs KYC_KEYFILE');
   if (cfg.FAUCET_ENABLED && !cfg.MINT_KEYFILE) throw new Error('FAUCET_ENABLED needs MINT_KEYFILE');
+  if (cfg.FAUCET_ENABLED && !cfg.FAUCET_TOKEN) throw new Error('FAUCET_ENABLED needs FAUCET_TOKEN (the test token the mint key administers)');
   return cfg;
 }

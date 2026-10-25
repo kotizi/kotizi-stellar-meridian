@@ -15,7 +15,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { sleep } from '../util.js';
 import { u32 } from './invoke.js';
-import type { Chain, ContractConfig, Prepared, RawGroup, RawWinner } from './chain.js';
+import type { Chain, ContractConfig, Prepared, RawGroup, RawWinner, TokenInfo } from './chain.js';
 import { StellarTxError } from './errors.js';
 
 const TX_TIMEOUT_SECS = 120;
@@ -57,8 +57,13 @@ export class RpcChain implements Chain {
   async config(): Promise<ContractConfig> {
     if (this.cachedConfig) return this.cachedConfig;
     const c = (await this.view('config')) as Native;
-    this.cachedConfig = { admin: String(c.admin), kycAuthority: String(c.kyc_authority), token: String(c.token) };
+    this.cachedConfig = { admin: String(c.admin), kycAuthority: String(c.kyc_authority) };
     return this.cachedConfig;
+  }
+
+  async tokens(): Promise<TokenInfo[]> {
+    const list = (await this.view('tokens')) as Native[];
+    return list.map((t) => ({ token: String(t.token), decimals: Number(t.decimals) }));
   }
 
   async ledger(): Promise<number> {
@@ -101,8 +106,7 @@ export class RpcChain implements Chain {
     return (await this.view('is_kyc', [new Address(wallet).toScVal()])) === true;
   }
 
-  async tokenBalance(wallet: string): Promise<bigint> {
-    const { token } = await this.config();
+  async tokenBalance(wallet: string, token: string): Promise<bigint> {
     return BigInt((await this.view('balance', [new Address(wallet).toScVal()], token)) as bigint);
   }
 
@@ -202,6 +206,7 @@ function toRawGroup(id: number, g: Native): RawGroup {
     id,
     name: String(g.name),
     uri: String(g.uri),
+    token: String(g.token),
     quota: BigInt(g.quota as bigint),
     period: BigInt(g.period as bigint),
     nextDrawTs: BigInt(g.next_draw_ts as bigint),

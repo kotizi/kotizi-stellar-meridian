@@ -7,10 +7,18 @@ pub struct KycApproved {
 }
 
 #[contractevent]
+pub struct TokenAdded {
+    #[topic]
+    pub token: Address,
+    pub decimals: u32,
+}
+
+#[contractevent]
 pub struct GroupCreated {
     #[topic]
     pub group_id: u32,
     pub name: String,
+    pub token: Address,
     pub quota: i128,
     pub max_members: u32,
     pub period: u64,

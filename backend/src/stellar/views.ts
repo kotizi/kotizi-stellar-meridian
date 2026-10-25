@@ -16,14 +16,16 @@ export function indexesOf(bitmap: bigint): number[] {
 export function toGroupView(
   g: RawGroup,
   winners: RawWinner[],
-  ctx: { contractId: string; admin: string; token: string },
+  ctx: { contractId: string; admin: string; decimals: ReadonlyMap<string, number> },
 ) {
   return {
     id: String(g.id),
     address: ctx.contractId,
     organizer: ctx.admin,
     groupId: g.id,
-    mint: ctx.token,
+    mint: g.token,
+    /** Decimals of the group's token (quotas and prizes are in its base units). */
+    decimals: ctx.decimals.get(g.token) ?? null,
     name: g.name,
     uri: g.uri,
     quotaAmount: g.quota.toString(),

@@ -33,7 +33,8 @@ fn setup<'a>() -> Setup<'a> {
     let admin = Address::generate(&e);
     let kyc = Address::generate(&e);
     let token = e.register(TestUsdc, (&admin, 6u32));
-    let id = e.register(Kotizi, (&admin, &kyc, &token));
+    let id = e.register(Kotizi, (&admin, &kyc));
+    KotiziClient::new(&e, &id).add_token(&token);
     Setup {
         usdc: TestUsdcClient::new(&e, &token),
         kotizi: KotiziClient::new(&e, &id),
@@ -45,9 +46,15 @@ fn setup<'a>() -> Setup<'a> {
 
 impl Setup<'_> {
     fn group(&self, max_members: u32) -> u32 {
+        self.group_in(&self.usdc.address, max_members)
+    }
+
+    /// A group collecting `token` (which must have been added).
+    fn group_in(&self, token: &Address, max_members: u32) -> u32 {
         self.kotizi.create_group(
             &String::from_str(&self.e, "Casa Demo"),
             &String::from_str(&self.e, "https://example.com/meta.json"),
+            token,
             &QUOTA,
             &max_members,
             &60,
@@ -62,18 +69,6 @@ impl Setup<'_> {
         self.usdc.mint(&m, &funds);
         m
     }
-}
-
-#[test]
-fn constructor_rejects_wrong_decimals() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let admin = Address::generate(&e);
-    let token = e.register(TestUsdc, (&admin, 18u32));
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        e.register(Kotizi, (&admin, &admin, &token));
-    }));
-    assert!(r.is_err());
 }
 
 #[test]
@@ -110,29 +105,30 @@ fn create_group_validates_and_is_admin_only() {
     let name = String::from_str(&s.e, "G");
     let uri = String::from_str(&s.e, "u");
     let k = &s.kotizi;
+    let tok = s.usdc.address.clone();
     assert_eq!(
-        k.try_create_group(&name, &uri, &0, &5, &60, &0),
+        k.try_create_group(&name, &uri, &tok, &0, &5, &60, &0),
         Err(Ok(Error::InvalidQuota))
     );
     assert_eq!(
-        k.try_create_group(&name, &uri, &QUOTA, &1, &60, &0),
+        k.try_create_group(&name, &uri, &tok, &QUOTA, &1, &60, &0),
         Err(Ok(Error::InvalidMaxMembers))
     );
     assert_eq!(
-        k.try_create_group(&name, &uri, &QUOTA, &65, &60, &0),
+        k.try_create_group(&name, &uri, &tok, &QUOTA, &65, &60, &0),
         Err(Ok(Error::InvalidMaxMembers))
     );
     assert_eq!(
-        k.try_create_group(&name, &uri, &QUOTA, &5, &0, &0),
+        k.try_create_group(&name, &uri, &tok, &QUOTA, &5, &0, &0),
         Err(Ok(Error::InvalidPeriod))
     );
     assert_eq!(
-        k.try_create_group(&name, &uri, &QUOTA, &5, &60, &1_001),
+        k.try_create_group(&name, &uri, &tok, &QUOTA, &5, &60, &1_001),
         Err(Ok(Error::FeeTooHigh))
     );
     let long = String::from_str(&s.e, "0123456789012345678901234567890123");
     assert_eq!(
-        k.try_create_group(&long, &uri, &QUOTA, &5, &60, &0),
+        k.try_create_group(&long, &uri, &tok, &QUOTA, &5, &60, &0),
         Err(Ok(Error::NameTooLong))
     );
 
@@ -152,12 +148,12 @@ fn create_group_validates_and_is_admin_only() {
         invoke: &MockAuthInvoke {
             contract: &k.address,
             fn_name: "create_group",
-            args: (&name, &uri, QUOTA, 5u32, 60u64, 0u32).into_val(&s.e),
+            args: (&name, &uri, &tok, QUOTA, 5u32, 60u64, 0u32).into_val(&s.e),
             sub_invokes: &[],
         },
     }]);
     assert!(k
-        .try_create_group(&name, &uri, &QUOTA, &5, &60, &0)
+        .try_create_group(&name, &uri, &tok, &QUOTA, &5, &60, &0)
         .is_err());
     assert_eq!(k.group_count(), 2);
 }
@@ -707,4 +703,157 @@ fn draws_on_a_partial_group_wait_for_new_joiners() {
     assert_eq!(s.kotizi.join_group(&id, &late), 1);
     s.kotizi.pay_quota(&id, &1);
     assert_eq!(s.draw(id, 1), 1);
+}
+
+// ------------------------------------------------------------------ several tokens
+
+impl Setup<'_> {
+    /// A second token with `decimals` decimals, enabled for new groups.
+    fn other_token(&self, decimals: u32) -> TestUsdcClient<'_> {
+        let id = self.e.register(TestUsdc, (&self.admin, decimals));
+        self.kotizi.add_token(&id);
+        TestUsdcClient::new(&self.e, &id)
+    }
+}
+
+#[test]
+fn tokens_are_enabled_by_the_admin_only_once_and_with_sane_decimals() {
+    let s = setup();
+    let k = &s.kotizi;
+    assert_eq!(k.tokens().len(), 1);
+    assert_eq!(k.tokens().get(0).unwrap().token, s.usdc.address);
+    assert_eq!(k.tokens().get(0).unwrap().decimals, 6);
+
+    let seven = s.other_token(7);
+    let listed = k.tokens();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.get(1).unwrap().token, seven.address);
+    assert_eq!(listed.get(1).unwrap().decimals, 7);
+
+    assert_eq!(
+        k.try_add_token(&seven.address),
+        Err(Ok(Error::TokenAlreadyAdded))
+    );
+    let wild = s.e.register(TestUsdc, (&s.admin, 19u32));
+    assert_eq!(k.try_add_token(&wild), Err(Ok(Error::InvalidTokenDecimals)));
+
+    // only the admin
+    let fresh = s.e.register(TestUsdc, (&s.admin, 6u32));
+    let stranger = Address::generate(&s.e);
+    s.e.set_auths(&[]);
+    s.e.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &k.address,
+            fn_name: "add_token",
+            args: (&fresh,).into_val(&s.e),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(k.try_add_token(&fresh).is_err());
+    s.e.mock_all_auths();
+    assert_eq!(k.tokens().len(), 2);
+
+    // a bounded allowlist
+    for _ in 0..6 {
+        s.other_token(6);
+    }
+    assert_eq!(k.tokens().len(), 8);
+    assert_eq!(k.try_add_token(&fresh), Err(Ok(Error::TooManyTokens)));
+}
+
+#[test]
+fn a_group_can_only_be_created_in_an_enabled_token() {
+    let s = setup();
+    let stranger_token = s.e.register(TestUsdc, (&s.admin, 6u32));
+    let r = s.kotizi.try_create_group(
+        &String::from_str(&s.e, "G"),
+        &String::from_str(&s.e, "u"),
+        &stranger_token,
+        &QUOTA,
+        &3,
+        &60,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(Error::TokenNotSupported)));
+    assert_eq!(s.kotizi.group_count(), 0);
+}
+
+#[test]
+fn groups_in_different_tokens_never_touch_each_others_balances() {
+    let s = setup();
+    let seven = s.other_token(7);
+    let a = s.group(2); // usdc, 6 decimals
+    let b = s.group_in(&seven.address, 2); // the 7-decimal token
+    assert_eq!(s.kotizi.get_group(&a).token, s.usdc.address);
+    assert_eq!(s.kotizi.get_group(&b).token, seven.address);
+
+    // member 0 and 1 hold both tokens and join both groups
+    let members: std::vec::Vec<Address> = (0..2)
+        .map(|_| {
+            let m = s.member(QUOTA * 10);
+            seven.mint(&m, &(QUOTA * 10));
+            m
+        })
+        .collect();
+    for m in &members {
+        s.kotizi.join_group(&a, m);
+        s.kotizi.join_group(&b, m);
+    }
+    s.advance(1, 61);
+
+    // paying in group b moves only the 7-decimal token
+    let (usdc0, seven0) = (s.usdc.balance(&members[0]), seven.balance(&members[0]));
+    s.kotizi.pay_quota(&b, &0);
+    assert_eq!(s.usdc.balance(&members[0]), usdc0);
+    assert_eq!(seven.balance(&members[0]), seven0 - QUOTA);
+    assert_eq!(seven.balance(&s.kotizi.address), QUOTA);
+    assert_eq!(s.usdc.balance(&s.kotizi.address), 0);
+    assert_eq!(s.kotizi.get_group(&b).vault, QUOTA);
+    assert_eq!(s.kotizi.get_group(&a).vault, 0);
+
+    // a member who holds only the other token cannot pay in this group, and nothing changes
+    let c = s.group_in(&seven.address, 2);
+    let poor = s.member(QUOTA * 10); // test usdc only
+    s.kotizi.join_group(&c, &poor);
+    s.advance(1, 61);
+    let before = s.kotizi.get_group(&c);
+    assert!(s.kotizi.try_pay_quota(&c, &0).is_err());
+    assert_eq!(s.kotizi.get_group(&c), before);
+    assert_eq!(s.usdc.balance(&poor), QUOTA * 10);
+}
+
+#[test]
+fn prize_and_fee_are_paid_in_the_groups_own_token() {
+    let s = setup();
+    let seven = s.other_token(7);
+    let (a, _) = {
+        let id = s.group_in(&seven.address, 2);
+        let ms: std::vec::Vec<Address> = (0..2)
+            .map(|_| {
+                let m = s.member(0);
+                seven.mint(&m, &(QUOTA * 5));
+                m
+            })
+            .collect();
+        for m in &ms {
+            s.kotizi.join_group(&id, m);
+        }
+        (id, ms)
+    };
+    s.advance(1, 61);
+    s.pay_all(a, 2);
+    let winner = s.draw(a, 0);
+    let owner = s.kotizi.cota_owners(&a).get(winner).unwrap();
+    let before = (
+        seven.balance(&owner),
+        s.usdc.balance(&owner),
+        seven.balance(&s.admin),
+    );
+    s.kotizi.claim_prize(&a, &winner);
+    let fee = QUOTA * 2 * 200 / 10_000;
+    assert_eq!(seven.balance(&owner), before.0 + QUOTA * 2 - fee);
+    assert_eq!(seven.balance(&s.admin), before.2 + fee);
+    assert_eq!(s.usdc.balance(&owner), before.1); // the other token is untouched
+    assert_eq!(seven.balance(&s.kotizi.address), 0);
 }

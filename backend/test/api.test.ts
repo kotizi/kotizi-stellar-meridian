@@ -2,7 +2,7 @@ import { scValToNative } from '@stellar/stellar-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GroupStatus } from '../src/stellar/chain.js';
 import { bearer, callOf, harness, type Harness } from './app-helper.js';
-import { TOKEN, group, newKey } from './fake-chain.js';
+import { TOKEN, TOKEN_7, group, newKey } from './fake-chain.js';
 
 let h: Harness;
 const user = newKey().publicKey();
@@ -33,7 +33,11 @@ describe('reads', () => {
   it('GET /healthz and /v1/config', async () => {
     expect((await get('/healthz')).json()).toEqual({ ok: true });
     const cfg = (await get('/v1/config')).json();
-    expect(cfg).toMatchObject({ contractId: h.chain.contractId, admin: h.chain.admin, token: TOKEN, kycMode: 'auto', faucet: true });
+    expect(cfg).toMatchObject({ contractId: h.chain.contractId, admin: h.chain.admin, faucetToken: TOKEN, kycMode: 'auto', faucet: true });
+    expect(cfg.tokens).toEqual([
+      { token: TOKEN, decimals: 6 },
+      { token: TOKEN_7, decimals: 7 },
+    ]);
     expect(cfg.sponsor).toBe(h.sponsor.publicKey());
     expect(JSON.stringify(cfg)).not.toMatch(/S[A-Z2-7]{55}/); // no secret seed anywhere
   });
@@ -79,8 +83,11 @@ describe('reads', () => {
     h.chain.accounts.add(user);
     h.chain.kyc.add(user);
     h.chain.usdc.set(user, 5_000_000n);
+    h.chain.balances7.set(user, 70_000_000n);
     const me = (await get('/v1/me', user)).json();
-    expect(me.wallets).toEqual([{ address: user, active: true, kyc: true, usdc: '5000000' }]);
+    expect(me.wallets).toEqual([
+      { address: user, active: true, kyc: true, balances: { [TOKEN]: '5000000', [TOKEN_7]: '70000000' } },
+    ]);
     expect(me.cotas.map((c: { group: string; index: number; canClaim: boolean; prize: string }) => [c.group, c.index, c.canClaim, c.prize])).toEqual([
       ['0', 0, false, '0'],
       ['0', 2, true, '300000000'],

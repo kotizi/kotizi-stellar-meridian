@@ -19,7 +19,7 @@ export type RelayPolicy = {
   sponsor: string;
   /** The Kotizi contract. */
   contractId: string;
-  /** The group token (Config.token); the only contract allowed as a sub-invocation, and only `transfer`. */
+  /** The token of the group the call is about; the only contract allowed as a sub-invocation, and only `transfer`. */
   token: string;
   /** Stellar wallets of the authenticated user. */
   userWallets: ReadonlySet<string>;
@@ -65,6 +65,17 @@ const contractIdOf = (a: xdr.ScAddress) => {
  *  - every authorization entry is an address credential of a wallet linked to the authenticated user,
  *    for exactly this call, plus at most one `transfer` on the group token from that wallet to the contract.
  */
+/**
+ * The group a call is about: its first argument (every relayed function takes the group id first).
+ * `undefined` for anything else; `validateRelayTransaction` then rejects the transaction with the precise reason.
+ */
+export function groupIdOf(tx: Transaction): number | undefined {
+  const op = tx.operations[0];
+  if (op?.type !== 'invokeHostFunction' || op.func.type !== 'hostFunctionTypeInvokeContract') return undefined;
+  const first = op.func.invokeContract.args[0];
+  return first?.type === 'scvU32' ? Number(first.u32) : undefined;
+}
+
 export function validateRelayTransaction(tx: Transaction, policy: RelayPolicy): RelayCheck {
   if (tx.source !== policy.sponsor) throw new RelayError('wrong_source', 'The transaction source must be the sponsor');
   if (tx.operations.length !== 1) throw new RelayError('one_operation', 'Exactly one operation is allowed');

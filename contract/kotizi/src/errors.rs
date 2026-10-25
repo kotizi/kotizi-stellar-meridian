@@ -30,4 +30,7 @@ pub enum Error {
     InsufficientVault = 24,
     NotWinner = 25,
     AlreadyClaimed = 26,
+    TokenNotSupported = 27,
+    TokenAlreadyAdded = 28,
+    TooManyTokens = 29,
 }

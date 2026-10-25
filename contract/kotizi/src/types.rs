@@ -5,7 +5,9 @@ pub const MAX_MEMBERS: u32 = 64;
 pub const MAX_FEE_BPS: u32 = 1_000;
 pub const MAX_NAME_LEN: u32 = 32;
 pub const MAX_URI_LEN: u32 = 200;
-pub const TOKEN_DECIMALS: u32 = 6;
+/// Tokens an admin can enable (a handful: the allowlist is read as one instance entry).
+pub const MAX_TOKENS: u32 = 8;
+pub const MAX_TOKEN_DECIMALS: u32 = 18;
 /// Group ids share the NFT token id (`u32`) with the cota index: `(group_id << 8) | index`.
 /// A draw waits for the drand round `DRAW_ROUND_DELAY` rounds (30 s) after the one running when it was
 /// requested, which absorbs the skew between ledger close time and drand's clock.
@@ -22,6 +24,8 @@ pub enum DataKey {
     Config,
     /// instance
     GroupCount,
+    /// instance: `Vec<TokenInfo>`, the tokens groups can be created in
+    Tokens,
     /// persistent: ledger timestamp of the approval
     Kyc(Address),
     /// persistent
@@ -37,7 +41,14 @@ pub enum DataKey {
 pub struct Config {
     pub admin: Address,
     pub kyc_authority: Address,
+}
+
+/// A token groups may use, with the decimals it reported when it was enabled (quotas are in its base units).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenInfo {
     pub token: Address,
+    pub decimals: u32,
 }
 
 #[contracttype]
@@ -54,6 +65,8 @@ pub enum Status {
 pub struct Group {
     pub name: String,
     pub uri: String,
+    /// The SEP-41 token this group collects and pays prizes in (one of `Tokens`).
+    pub token: Address,
     pub quota: i128,
     pub period: u64,
     pub next_draw_ts: u64,

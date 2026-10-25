@@ -8,6 +8,8 @@ export type RawGroup = {
   id: number;
   name: string;
   uri: string;
+  /** The token (SEP-41 contract) the group collects and pays in. */
+  token: string;
   quota: bigint;
   period: bigint;
   nextDrawTs: bigint;
@@ -28,12 +30,17 @@ export type RawGroup = {
 
 export type RawWinner = { index: number; gross: bigint; wonRound: number };
 
-export type ContractConfig = { admin: string; kycAuthority: string; token: string };
+export type ContractConfig = { admin: string; kycAuthority: string };
+
+/** A token groups can be created in, with its decimals (quotas are in base units). */
+export type TokenInfo = { token: string; decimals: number };
 
 /** The chain as the routes and the keeper see it. `RpcChain` is the real one; tests use a fake. */
 export interface Chain {
   readonly contractId: string;
   config(): Promise<ContractConfig>;
+  /** Tokens enabled for new groups. */
+  tokens(): Promise<TokenInfo[]>;
   /** Latest ledger sequence. */
   ledger(): Promise<number>;
   groupCount(): Promise<number>;
@@ -43,7 +50,7 @@ export interface Chain {
   cotaOwners(id: number): Promise<string[]>;
   totalPaid(id: number, index: number): Promise<bigint>;
   isKyc(wallet: string): Promise<boolean>;
-  tokenBalance(wallet: string): Promise<bigint>;
+  tokenBalance(wallet: string, token: string): Promise<bigint>;
   accountExists(wallet: string): Promise<boolean>;
   /** XLM balance of an account in stroops (0 when it doesn't exist). */
   xlmBalance(wallet: string): Promise<bigint>;

@@ -6,7 +6,7 @@ import { invokeFunc, u32, addr } from '../stellar/invoke.js';
 import { StellarTxError } from '../stellar/errors.js';
 import { withAccountLock } from '../stellar/lock.js';
 import { assertBudget } from './budget.js';
-import { RelayError, validateRelayTransaction, type RelayCheck, type RelayFunction } from './validate.js';
+import { RelayError, groupIdOf, validateRelayTransaction, type RelayCheck, type RelayFunction } from './validate.js';
 
 export type PrepareRequest = { fn: RelayFunction; groupId: number; index?: number; wallet: string };
 export type Prepared = {
@@ -18,8 +18,12 @@ export type Prepared = {
   payloads: { address: string; payload: string }[];
 };
 
-async function policyFor(deps: Deps, userWallets: string[]) {
-  const { token } = await deps.chain.config();
+/** The policy for a call on `groupId`: the only token sub-call allowed is a transfer of that group's token. */
+async function policyFor(deps: Deps, userWallets: string[], groupId: number | undefined) {
+  // no group id: nothing is allowed through (the validator names the reason), so no token is needed
+  const group = groupId === undefined ? undefined : await deps.chain.group(groupId);
+  if (groupId !== undefined && !group) throw new HttpError(422, 'contract_error', 'GroupNotFound');
+  const token = group?.token ?? '';
   return {
     sponsor: deps.sponsor.publicKey(),
     contractId: deps.chain.contractId,
@@ -54,7 +58,7 @@ export async function prepareRelay(deps: Deps, user: { userId: string; wallets: 
   } catch (e) {
     asHttp(e);
   }
-  const check = validateRelayTransaction(prepared.transaction, await policyFor(deps, user.wallets));
+  const check = validateRelayTransaction(prepared.transaction, await policyFor(deps, user.wallets, req.groupId));
   const validUntilLedger = (await chain.ledger()) + deps.config.RELAY_AUTH_LEDGERS;
 
   const payloads: Prepared['payloads'] = [];
@@ -100,8 +104,6 @@ export async function relay(
   req: { transaction: string; validUntilLedger: number; signatures: string[] },
 ): Promise<{ txHash: string; kinds: string[] }> {
   const { chain, config } = deps;
-  const policy = await policyFor(deps, user.wallets);
-
   let parsed;
   try {
     parsed = TransactionBuilder.fromXDR(req.transaction, config.NETWORK_PASSPHRASE);
@@ -109,6 +111,7 @@ export async function relay(
     throw new RelayError('bad_transaction', 'Not a valid transaction');
   }
   if (!(parsed instanceof Transaction)) throw new RelayError('bad_transaction', 'Fee-bump envelopes are not accepted');
+  const policy = await policyFor(deps, user.wallets, groupIdOf(parsed));
   const check = validateRelayTransaction(parsed, policy);
 
   const ledger = await chain.ledger();

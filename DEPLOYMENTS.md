@@ -7,14 +7,17 @@ Redeploying the contract changes the Kotizi ID: update `CONTRACT_ID` in `backend
 
 | Contract | ID |
 |---|---|
-| test-usdc (6 decimals) | `CADKFUPE2RCG4RUD5C4JHIE5DBZ27AT7KFAIZSLMTJO4NNHWTITLIGHK` |
-| kotizi (drand randomness, branch `feat/drand-randomness`) | `CA3LSTPIZWLX3DXRZMZMQPS63OWJ3FR3ZUW4VVH3J5ZR4YWKEAUBIZJV` |
-| kotizi, commit-reveal version (obsolete, replaced) | `CC4VXKV4PXLGJDKFXPRHSO527JSWWRPBWRYTO3UBIXXVGVF67MD5ZXUB` |
+| kotizi (**current**: drand randomness, typed errors, several tokens; branch `feat/multi-token`) | `CDLG5PWRFTSLQNCWGFEBU4AEHKPMQCI5O4KXB3RGINP4Q2AY5BTQVFCR` |
+| test token, 6 decimals (demo faucet token) | `CADKFUPE2RCG4RUD5C4JHIE5DBZ27AT7KFAIZSLMTJO4NNHWTITLIGHK` |
+| test token, 7 decimals (stands in for USDC / USDT0 precision) | `CAT65NQ3OYCX6EOAZRNU5JM6IMXQ5I6KJMNJRDIOF5WQKOYVNJ43MD5G` |
+| Circle testnet USDC (SAC of `USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`, 7 decimals; needs a trustline) | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
+| earlier kotizi deployments (obsolete) | `CAJMDP3KW22MHPDYM22JOUNDKXO34RG6PLI4325JY6QFQP37JGZJWJZ7`, `CA3LSTPIZWLX3DXRZMZMQPS63OWJ3FR3ZUW4VVH3J5ZR4YWKEAUBIZJV`, `CC4VXKV4PXLGJDKFXPRHSO527JSWWRPBWRYTO3UBIXXVGVF67MD5ZXUB` |
 
-The `kotizi` above predates the typed `Result<_, Error>` signatures (same behavior and error codes, but its on-chain spec
-lacks the error types): redeploy before generating the frontend bindings, then update this file and `CONTRACT_ID`.
+Constructor: kotizi `(admin = deployer, kyc_authority = kyc)`; tokens are enabled afterwards with `add_token` (all three above are).
+Test tokens: `(admin = deployer, decimals)`.
 
-Constructors: test-usdc `(admin = deployer, decimals = 6)`; kotizi `(admin = deployer, kyc_authority = kyc, token = test-usdc)`.
+**Cost:** each `kotizi` deploy burned ~51 XLM (wasm upload and rent). The deployer key ran out, so the last deploy was paid by
+the sponsor key (the payer is independent of the contract admin). Budget ~50 XLM per redeploy.
 
 ## Accounts
 
@@ -28,12 +31,15 @@ Constructors: test-usdc `(admin = deployer, decimals = 6)`; kotizi `(admin = dep
 
 ## Demo groups (current contract)
 
-| id | name | cotas | quota | period |
-|---|---|---|---|---|
-| 0 | Duo | 2 | 10 USDC | 30 s (journey run to completion of round 0: drand draw settled, prize claimed) |
-| 1 | Duo | 2 | 10 USDC | 30 s (unused) |
+| id | name | token | cotas | quota | period |
+|---|---|---|---|---|---|
+| 0 | Duo6 | test token, 6 decimals | 2 | 10 | 30 s (journey run: drand draw settled, prize claimed) |
+| 1 | Duo7 | test token, 7 decimals | 2 | 10 | 30 s (journey run: drand draw settled, prize claimed) |
+
+Create more with the CLI as the deployer, e.g. `stellar contract invoke --id <kotizi> --network testnet -- create_group --name '"X"'
+--uri '"u"' --token <token> --quota <base units> --max_members 2 --period 30 --admin_fee_bps 200`.
 
 ## Journey
 
 `backend/scripts/journey.ts` runs onboarding, gasless join and pay, draw and claim against a local API
-started with `AUTH_MODE=dev`, `KYC_MODE=auto`, `FAUCET_ENABLED=true` and `MINT_KEYFILE=../keypairs/deployer.key`.
+started with `AUTH_MODE=dev`, `KYC_MODE=auto`, `FAUCET_ENABLED=true` and `MINT_KEYFILE=../keypairs/deployer.key` and `FAUCET_TOKEN=<the test token of the group>` (one per run).

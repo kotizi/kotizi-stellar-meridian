@@ -8,8 +8,8 @@ export function groupRoutes(app: FastifyInstance, deps: Deps) {
   const { chain } = deps;
 
   const groups = memo(3_000, async () => {
-    const [cfg, raw] = await Promise.all([chain.config(), chain.groups()]);
-    const ctx = { contractId: chain.contractId, admin: cfg.admin, token: cfg.token };
+    const [cfg, raw, tokens] = await Promise.all([chain.config(), chain.groups(), chain.tokens()]);
+    const ctx = { contractId: chain.contractId, admin: cfg.admin, decimals: new Map(tokens.map((t) => [t.token, t.decimals])) };
     return Promise.all(raw.map(async (g) => toGroupView(g, g.wonBitmap === 0n ? [] : await chain.winners(g.id), ctx)));
   });
   const owners = new Map<number, ReturnType<typeof memo<string[]>>>();

@@ -2,7 +2,7 @@ import { Account, Address, Memo, Operation, StrKey, TransactionBuilder, nativeTo
 import { describe, expect, it } from 'vitest';
 import { RelayError, validateRelayTransaction, type RelayPolicy } from '../src/relay/validate.js';
 import { addr, invokeFunc, u32 } from '../src/stellar/invoke.js';
-import { CONTRACT, PASSPHRASE, TOKEN, newKey } from './fake-chain.js';
+import { CONTRACT, PASSPHRASE, TOKEN, TOKEN_7, newKey } from './fake-chain.js';
 
 const sponsor = newKey().publicKey();
 const user = newKey().publicKey();
@@ -143,6 +143,12 @@ describe('relay validation: sub-invocations', () => {
     reject('forbidden_authorization', withSubs([transferSub(stranger, CONTRACT)])); // from somebody else
     reject('forbidden_authorization', withSubs([transferSub(user, CONTRACT, StrKey.encodeContract(Buffer.alloc(32, 3)))])); // other token
     reject('forbidden_authorization', withSubs([transferSub(user, CONTRACT, TOKEN, 'burn')])); // other function
+  });
+  it('follows the group’s token: a group in another token only allows that token’s transfer', () => {
+    const seven: RelayPolicy = { ...policy, token: TOKEN_7 };
+    const ok = (subs: xdr.SorobanAuthorizedInvocation[]) => validateRelayTransaction(build({ auth: [entry(user, invocation(call, subs))] }), seven);
+    expect(() => ok([transferSub(user, CONTRACT, TOKEN_7)])).not.toThrow();
+    expect(() => ok([transferSub(user, CONTRACT, TOKEN)])).toThrow(RelayError); // the default token is now the wrong one
   });
   it('rejects nested sub-calls and sub-calls on functions that take no payment', () => {
     const nested = invocation(fnCall(TOKEN, 'transfer', [addr(user), addr(CONTRACT), nativeToScVal(1n, { type: 'i128' })]), [transferSub(user, CONTRACT)]);

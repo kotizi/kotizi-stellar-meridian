@@ -68,8 +68,7 @@ export function onboardingRoutes(app: FastifyInstance, deps: Deps) {
     const amount = BigInt(Math.round(config.FAUCET_AMOUNT_USDC * 1e6));
     try {
       await ensureActive(wallet);
-      const { token } = await chain.config();
-      const txHash = await invokeAs(deps.mintSigner, token, 'mint', [addr(wallet), i128(amount)]);
+      const txHash = await invokeAs(deps.mintSigner, config.FAUCET_TOKEN!, 'mint', [addr(wallet), i128(amount)]);
       await db.insert(schema.faucetClaims).values({ wallet, userId: req.user.userId, amount: Number(amount), txHash });
       return { wallet, amount: amount.toString(), txHash };
     } catch (e) {

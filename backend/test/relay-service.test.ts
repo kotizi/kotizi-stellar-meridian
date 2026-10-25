@@ -1,9 +1,9 @@
-import { Account, Operation, TransactionBuilder, Transaction } from '@stellar/stellar-sdk';
+import { Account, Address, Operation, TransactionBuilder, Transaction } from '@stellar/stellar-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '../src/db/index.js';
 import { addr, invokeFunc } from '../src/stellar/invoke.js';
 import { bearer, callOf, harness, type Harness } from './app-helper.js';
-import { PASSPHRASE, group, newKey } from './fake-chain.js';
+import { PASSPHRASE, TOKEN_7, group, newKey } from './fake-chain.js';
 
 let h: Harness;
 const userKp = newKey();
@@ -52,6 +52,20 @@ describe('POST /v1/tx/prepare + /v1/tx/relay', () => {
     expect(creds && creds.type === 'sorobanCredentialsAddress' && creds.address.signature.type).toBe('scvVec'); // signed
     const rows = await h.deps.db.select().from(schema.sponsoredTx);
     expect(rows.map((r) => [r.userId, r.wallet, r.kinds])).toEqual([[`dev-${user}`, user, 'pay_quota']]);
+  });
+
+  it('pays a group in another token: the signed authorization transfers that group’s token', async () => {
+    h.chain.groupList = [group({ id: 1, token: TOKEN_7 })];
+    h.chain.owners.set(1, [user]);
+    const p = await prepared({ fn: 'pay_quota', groupId: 1, index: 0 });
+    const tx = TransactionBuilder.fromXDR(p.transaction, PASSPHRASE) as Transaction;
+    const op = tx.operations[0]!;
+    const sub = op.type === 'invokeHostFunction' ? op.auth![0]!.rootInvocation.subInvocations[0]! : undefined;
+    const f = sub!.function.type === 'sorobanAuthorizedFunctionTypeContractFn' ? sub!.function.contractFn : undefined;
+    expect(Address.fromScAddress(f!.contractAddress).toString()).toBe(TOKEN_7);
+    const res = await relay({ transaction: p.transaction, validUntilLedger: p.validUntilLedger, signatures: [sign(userKp, p.payloads[0]!.payload)] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().kinds).toEqual(['pay_quota']);
   });
 
   it('join_group needs no token sub-call and uses the caller’s wallet', async () => {

@@ -6,7 +6,7 @@ import { loadConfig } from '../src/config.js';
 import { openDb } from '../src/db/index.js';
 import type { Deps } from '../src/deps.js';
 import type { Beacons } from '../src/drand.js';
-import { CONTRACT, FakeChain, newKey } from './fake-chain.js';
+import { CONTRACT, FakeChain, TOKEN, newKey } from './fake-chain.js';
 
 /** Beacons the test publishes: rounds not in the map are "not published yet". */
 export class FakeBeacons implements Beacons {
@@ -43,6 +43,7 @@ export async function harness(env: Record<string, string> = {}): Promise<Harness
     KYC_MODE: 'auto',
     KYC_KEYFILE: 'unused',
     FAUCET_ENABLED: 'true',
+    FAUCET_TOKEN: TOKEN,
     MINT_KEYFILE: 'unused',
     ...env,
   });

@@ -6,9 +6,10 @@ import { requireAuth } from './common.js';
 export function meRoutes(app: FastifyInstance, deps: Deps) {
   const { chain } = deps;
 
-  /** Everything the dashboard needs about the signed-in user: wallets, KYC, USDC and owned cotas. */
+  /** Everything the dashboard needs about the signed-in user: wallets, KYC, token balances and owned cotas. */
   app.get('/v1/me', { preHandler: requireAuth(deps) }, async (req) => {
     const mine = new Set(req.user.wallets);
+    const tokens = await chain.tokens();
     const wallets = await Promise.all(
       req.user.wallets.map(async (address) => {
         const active = await chain.accountExists(address);
@@ -16,13 +17,16 @@ export function meRoutes(app: FastifyInstance, deps: Deps) {
           address,
           active,
           kyc: active ? await chain.isKyc(address) : false,
-          usdc: active ? (await chain.tokenBalance(address)).toString() : '0',
+          /** Balance per enabled token (contract id -> base units). */
+          balances: Object.fromEntries(
+            await Promise.all(tokens.map(async (t) => [t.token, active ? (await chain.tokenBalance(address, t.token)).toString() : '0'] as const)),
+          ),
         };
       }),
     );
 
     const [cfg, groups] = await Promise.all([chain.config(), chain.groups()]);
-    const ctx = { contractId: chain.contractId, admin: cfg.admin, token: cfg.token };
+    const ctx = { contractId: chain.contractId, admin: cfg.admin, decimals: new Map(tokens.map((t) => [t.token, t.decimals])) };
     const cotas = (
       await Promise.all(
         groups.map(async (g) => {

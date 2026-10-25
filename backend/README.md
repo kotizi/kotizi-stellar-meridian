@@ -19,7 +19,8 @@ Key files hold a secret seed (`S...`), live outside git and are never logged. On
 | `SPONSOR_KEYFILE` | source and fee payer of relayed transactions; creates accounts for new wallets |
 | `KEEPER_KEYFILE` | signs `request_draw` / `settle_draw`, pays its own fee (defaults to the sponsor) |
 | `KYC_KEYFILE` | must be the contract's `kyc_authority` (`approve_kyc`) |
-| `MINT_KEYFILE` | must be the test token's admin (faucet mint) |
+| `MINT_KEYFILE` | must be the admin of `FAUCET_TOKEN` (faucet mint) |
+| `FAUCET_TOKEN` | the demo test token the faucet mints; required with `FAUCET_ENABLED` |
 
 The admin signs `create_group` with their own wallet (not here), so no admin key lives on the server.
 
@@ -27,9 +28,9 @@ The admin signs `create_group` with their own wallet (not here), so no admin key
 
 | | |
 |---|---|
-| `GET /healthz`, `GET /v1/config` | liveness; contract id, admin, token, sponsor, KYC/faucet modes |
+| `GET /healthz`, `GET /v1/config` | liveness; contract id, admin, enabled tokens (with decimals), sponsor, KYC/faucet modes |
 | `GET /v1/groups`, `/v1/groups/:id`, `/v1/groups/:id/members` | group state (bigints as strings, bitmaps as index lists), cota owners |
-| `GET /v1/me` | the user's wallets (account active, KYC, USDC) and cotas |
+| `GET /v1/me` | the user's wallets (account active, KYC, balance per enabled token) and cotas |
 | `POST /v1/kyc` | creates the wallet's account if missing, then `approve_kyc` (`KYC_MODE=auto`) |
 | `POST /v1/faucet` | mints test USDC, one claim per wallet per day |
 | `POST /v1/tx/prepare`, `POST /v1/tx/relay` | gasless `join_group` / `pay_quota` / `claim_prize` (below) |
