@@ -7,6 +7,12 @@ import type { Address } from "@/chain";
 export type LoginMethod = "email" | "wallet";
 
 /**
+ * How people sign in: email only for now (user decision, 2026-10-25). The landing keeps its
+ * "Already have a crypto wallet?" link and shows it again once "wallet" is back in this list.
+ */
+export const LOGIN_METHODS: readonly LoginMethod[] = ["email"];
+
+/**
  * Signs with the session's wallet, without sending. Plain bytes in and out, so the session doesn't
  * depend on a chain SDK; the chain client decides what to sign.
  *
@@ -29,6 +35,8 @@ export interface Session {
   address: Address | null;
   /** Email or social handle shown in the UI. */
   label: string | null;
+  /** How this session lets people sign in; the landing offers only these. */
+  loginMethods: readonly LoginMethod[];
   /** Signer for `address`. Null without a wallet, and always null in the mock session. */
   signer: SessionSigner | null;
   /**

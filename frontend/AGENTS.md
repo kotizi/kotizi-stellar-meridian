@@ -147,7 +147,8 @@ scope (roadmap only): marketplace, bids, default handling, real KYC provider, pr
   `NEXT_PUBLIC_PRIVY_APP_ID` the app uses a mock session. UI reads auth only through `useSession()`
   (`src/session/`).
 - **Wallet login link** (user decision, 2026-10-25): the landing keeps the quiet "Already have a
-  crypto wallet? Use it instead" link in the code, but only email login is offered for now.
+  crypto wallet? Use it instead" link in the code, but only email login is offered for now
+  (`LOGIN_METHODS` in `src/session/context.ts`; the link shows when it lists `"wallet"`).
 - **Network fees and rent are the app's, never the user's**, through the **backend relay**. The
   wallet never signs a transaction envelope: `POST /v1/tx/prepare {fn, groupId, index?}` builds and
   simulates the call with the backend's sponsor as the transaction source and answers the
@@ -283,9 +284,23 @@ Plan (one commit per part, `bun run quality` and `bun run build` after each; bra
      accounts (`G…`) on stellar.expert's testnet.
    - Known for part 5: a real draw takes about 36 s (the round is 30 s ahead, plus the keeper's slack),
      longer than `drawUntilSettled`'s default wait (10 × 1.5 s).
-3. Privy Stellar session: create the embedded Stellar wallet after login (once per account and tab,
-   after Privy's modal, never while it creates the account), `SessionSigner.signHash` through
-   `useSignRawHash`, the address from the linked Stellar wallets.
+3. Privy Stellar session. **Done** (`src/session/privy-session.tsx`, helpers in
+   `src/session/stellar-wallet.ts`, tested):
+   - Privy `loginMethods` come from `LOGIN_METHODS` (`session/context.ts`: `["email"]`), also exposed
+     as `Session.loginMethods`; the landing shows the wallet link only when it lists `"wallet"`.
+   - `useEnsureStellarWallet`: in `useLogin`'s `onComplete` (after Privy's modal, on a login or a
+     restored session), an account with no linked Stellar wallet (`needsStellarWallet`) gets its
+     embedded one (`useCreateWallet({ chainType: "stellar" })` from `extended-chains`); once per
+     account and tab, 3 tries 2 s apart, else the next visit retries. Every new account goes through
+     this, since Stellar has no `createOnLogin`.
+   - `Session.address` = `stellarAddressOf(user)`: the linked Stellar wallet, embedded first
+     (`walletClientType` `privy` or `privy-v2`).
+   - `SessionSigner.signHash(hash)` → `useSignRawHash({ address, chainType: "stellar", hash: 0x… })`;
+     the 64-byte ed25519 signature is checked (`signatureBytes`). The hook is read through a ref so
+     the signer stays stable per address.
+   - **Checked with a real Privy app (2026-10-25)**: a new email account got its embedded Stellar wallet
+     (a `G…` address in Privy's dashboard) this way. Signing (`useSignRawHash`) is first exercised by
+     the relay in part 5; the backend's `stellarWalletsOf` reads the same `chain_type: "stellar"`.
 4. `StellarKotiziClient` reads (`src/chain/stellar/`: views with Zod schemas per route, ids, errors,
    client), tested with a fake `request`.
 5. `StellarKotiziClient` actions: join (+ first installment as a second relayed call), pay, claim,
