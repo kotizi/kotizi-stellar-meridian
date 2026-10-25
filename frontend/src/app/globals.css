@@ -236,7 +236,6 @@
   --chart-3: var(--deep-blue);
   --chart-4: var(--cyan);
   --chart-5: var(--mist);
-  --radius: var(--radius-md); /* shadcn base, only read by the toasts (sonner) */
   --sidebar: var(--bg-canvas);
   --sidebar-foreground: #ffffff;
   --sidebar-primary: var(--kotizi-blue);
@@ -535,13 +534,6 @@
     caret-color: var(--text-primary);
     box-shadow: 0 0 0 1000px var(--bg-surface) inset;
     transition: background-color 9999s;
-  }
-  /* Toasts clear the tab bar (84 px, below lg). Sonner's `mobileOffset` only applies up to 600 px
-     and it sets the offset inline, hence !important for the widths in between. */
-  @media (width < 64rem) {
-    [data-sonner-toaster] {
-      --offset-bottom: 100px !important;
-    }
   }
   /* Icon stroke from the design system (Átomos · Íconos, a proposal the brandbook doesn't define yet):
      1.5 px, straight ends and angled joins, echoing the 45° cut of the symbol. Square caps keep

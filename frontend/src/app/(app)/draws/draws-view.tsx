@@ -7,7 +7,7 @@ import { useState } from "react";
 import type { DrawIdleReason, Group } from "@/chain";
 import { awaitingInstallment, currentDrawNumber, currentPool, DRAW_THRESHOLD_PCT, drawPhase, eligibleBitmap, lastDrawShown, paidNeeded, popcount, prizeOf, waitsForNewMembers } from "@/chain/derive";
 import { drawUntilSettled, type DrawOutcome } from "@/chain/draw";
-import { useChainAction, useNow } from "@/chain/hooks";
+import { useChainAction, useNow, type ActionOutcome } from "@/chain/hooks";
 import { canClaim } from "@/chain/share";
 import type { MyShare } from "@/chain/use-my-shares";
 import { ShareGate, NoShare } from "@/components/share/share-gate";
@@ -32,12 +32,13 @@ const IDLE_MESSAGES: Record<DrawIdleReason, string> = {
   belowThreshold: `The draw opens once ${DRAW_THRESHOLD_PCT}% of the shares pay this installment`,
 };
 
-const drawMessage = (outcome: DrawOutcome) =>
+/** "Draw now"'s outcome in the status dialog: a winner, a draw still settling, or why none ran. */
+const drawMessage = (outcome: DrawOutcome): ActionOutcome =>
   outcome.settled
-    ? "Share contemplated"
+    ? { title: "Share contemplated", tone: "success" }
     : outcome.requested
-      ? "Draw started. The contemplated share appears in a few seconds"
-      : IDLE_MESSAGES[outcome.reason];
+      ? { title: "Draw started", description: "The contemplated share appears here in a few seconds.", tone: "info" }
+      : { title: "No draw yet", description: IDLE_MESSAGES[outcome.reason], tone: "info" };
 
 /** Where the randomness comes from, in plain words. */
 const randomnessSource = (group: Group) =>
@@ -111,6 +112,7 @@ function Draw({ shares }: { shares: MyShare[] }) {
     const outcome = await run("draw", (c) => drawUntilSettled(c, group.id), {
       pending: phase === "pending" ? "Revealing the contemplated share…" : "Drawing…",
       success: drawMessage,
+      failure: "The draw didn't run",
     });
     if (outcome?.settled && outcome.signature) {
       setProof({ group: group.id, round: group.round + 1, signature: outcome.signature });

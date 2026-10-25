@@ -1,10 +1,11 @@
 "use client";
 
-import { ArrowLeft, ChevronRight, LoaderCircle, TriangleAlert } from "lucide-react";
+import { ArrowLeft, ChevronRight } from "lucide-react";
 import { useId, useRef, useState, type ReactNode } from "react";
 
+import { showActionStatus } from "@/chain/action-status";
 import { KotiziError } from "@/chain/errors";
-import { errorMessage, invalidateChain } from "@/chain/hooks";
+import { errorMessage, failureStatus, invalidateChain } from "@/chain/hooks";
 import { useTestHelpers } from "@/chain/use-test-helpers";
 import { DEPOSIT_METHODS, MethodDetails, type DepositMethod } from "@/components/checkout/deposit-methods";
 import { NetworkFeeRow } from "@/components/checkout/network-fee-row";
@@ -13,21 +14,20 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { formatUsdc } from "@/lib/format";
-import { cn } from "@/lib/utils";
 import { useSession } from "@/session/context";
 
-type Step =
-  | { name: "review" }
-  | { name: "method"; method: DepositMethod }
-  | { name: "depositing"; method: DepositMethod }
-  | { name: "error"; method: DepositMethod; error: unknown };
+type Step = { name: "review" } | { name: "method"; method: DepositMethod };
 
 /**
  * The checkout of every payment (joining a group, paying an installment). The app keeps no balance,
  * so the money comes in here: the user reviews what they pay, picks how (bank transfer, Pix or
- * crypto), sees that method's instructions and confirms. The deposit lands on the network of what
- * is being paid, only for what the account's wallet there lacks, and `onConfirm` then runs the
- * payment itself. Cancel holds the initial focus, so a stray Enter or double click never pays.
+ * crypto), sees that method's instructions and confirms. Cancel holds the initial focus, so a stray
+ * Enter or double click never pays.
+ *
+ * Confirming closes the checkout and the app's status dialog takes over: "Confirming your payment…"
+ * while the deposit lands (only what the account's wallet lacks), then `onConfirm` runs the payment
+ * itself, whose progress and outcome show in that same dialog (`useChainAction`). A failed deposit
+ * shows there too, with "Try again".
  *
  * Without a deposit to make (nothing to pay now, or a network without test helpers) it is a plain
  * confirmation.
@@ -55,10 +55,8 @@ export function CheckoutDialog({
   const cancelRef = useRef<HTMLButtonElement>(null);
   const [step, setStep] = useState<Step>({ name: "review" });
   const depositShortfall = amount > 0n ? testing?.depositShortfall : undefined;
-  const depositing = step.name === "depositing";
 
   const changeOpen = (next: boolean) => {
-    if (depositing) return; // the deposit is on its way; its result shows here
     onOpenChange(next);
     if (!next) setStep({ name: "review" });
   };
@@ -68,26 +66,33 @@ export function CheckoutDialog({
     onConfirm(method);
   };
 
+  /** The deposit, in the status dialog; the payment follows in the same dialog once the money is in. */
   const deposit = async (method: DepositMethod) => {
     if (!depositShortfall || !address) return;
-    setStep({ name: "depositing", method });
+    changeOpen(false);
+    showActionStatus({ phase: "pending", title: "Confirming your payment…" });
     try {
       await depositShortfall({ owner: address, amount });
     } catch (error) {
       console.warn("[kotizi] checkout deposit failed", error);
-      setStep({ name: "error", method, error });
+      const limited = error instanceof KotiziError && error.code === "FaucetLimit";
+      showActionStatus(
+        limited
+          ? { phase: "failed", tone: "warning", title: "Deposit limit reached", description: `${errorMessage(error)}. Try again tomorrow.` }
+          : { ...failureStatus(error, "Payment not completed"), retry: () => void deposit(method) },
+      );
       return;
     } finally {
       invalidateChain();
     }
-    confirm(method);
+    onConfirm(method);
   };
 
   const id = useId();
 
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
-      <DialogContent initialFocus={cancelRef} showCloseButton={!depositing} className="gap-5 p-6 sm:max-w-md">
+      <DialogContent initialFocus={cancelRef} className="gap-5 p-6 sm:max-w-md">
         {step.name === "review" && (
           <>
             <Header title={title} description="Check the details. Nothing is paid until you confirm." />
@@ -169,22 +174,6 @@ export function CheckoutDialog({
             </div>
           </>
         )}
-
-        {depositing && (
-          <Result
-            icon={<LoaderCircle className="size-6 animate-spin text-brand" />}
-            title="Confirming your payment…"
-            description="This takes a few seconds. You can keep this window open."
-          />
-        )}
-
-        {step.name === "error" && (
-          <DepositError
-            error={step.error}
-            onRetry={() => setStep({ name: "method", method: step.method })}
-            onClose={() => changeOpen(false)}
-          />
-        )}
       </DialogContent>
     </Dialog>
   );
@@ -217,38 +206,5 @@ function Amount({ amount }: { amount: bigint }) {
       {formatUsdc(amount)}
       <span className="ml-1.5 type-mono-caption text-tertiary">USD</span>
     </p>
-  );
-}
-
-function Result({ icon, title, description }: { icon: ReactNode; title: string; description: string }) {
-  return (
-    <div className="flex flex-col items-center gap-3 px-2 py-4 text-center">
-      <span className="flex size-12 items-center justify-center rounded-full bg-surface-raised">{icon}</span>
-      <DialogTitle className="type-h5">{title}</DialogTitle>
-      <DialogDescription className="type-body-sm text-secondary">{description}</DialogDescription>
-    </div>
-  );
-}
-
-function DepositError({ error, onRetry, onClose }: { error: unknown; onRetry: () => void; onClose: () => void }) {
-  const limited = error instanceof KotiziError && error.code === "FaucetLimit";
-  return (
-    <>
-      <Result
-        icon={<TriangleAlert className={cn("size-6", limited ? "text-warning" : "text-error")} />}
-        title={limited ? "Deposit limit reached" : "Payment not completed"}
-        description={limited ? `${errorMessage(error)}. Try again tomorrow.` : errorMessage(error)}
-      />
-      <div className="flex flex-col-reverse gap-2 sm:flex-row">
-        <Button variant={limited ? "primary" : "secondary"} size="lg" className="sm:flex-1" onClick={onClose}>
-          Close
-        </Button>
-        {!limited && (
-          <Button variant="primary" size="lg" className="sm:flex-1" onClick={onRetry}>
-            Try again
-          </Button>
-        )}
-      </div>
-    </>
   );
 }

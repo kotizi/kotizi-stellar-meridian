@@ -143,7 +143,7 @@ export function CreateGroupView() {
       "create",
       (c) =>
         c.createGroup({ organizer: address, ...input, uri: metadataUri(window.location.origin, form) }),
-      { pending: "Creating the group…", success: "Group created" },
+      { pending: "Creating the group…", success: "Group created", failure: "Group not created" },
     );
     if (result) router.push(`/groups/${result.group}`);
   };

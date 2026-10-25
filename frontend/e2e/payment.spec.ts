@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-import { drawNow, joinGroup } from "./helpers";
+import { closeStatus, drawNow, joinGroup } from "./helpers";
 
 test("make a share payment", async ({ page }) => {
   await joinGroup(page, "Studio Pinheiros");
@@ -16,5 +16,6 @@ test("make a share payment", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Crypto" })).toBeVisible();
 
   await page.getByRole("button", { name: "Confirm payment" }).click();
+  await closeStatus(page, "Installment 2 paid");
   await expect(page.getByText("You're up to date. The next installment opens after this draw.")).toBeVisible();
 });

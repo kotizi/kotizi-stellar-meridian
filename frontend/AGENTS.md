@@ -327,9 +327,29 @@ Plan (one commit per part, `bun run quality` and `bun run build` after each; bra
      any name in neither. Also `Error(Contract, #100)` (the demo token's `InsufficientBalance`) →
      `InsufficientFunds`, `account_not_active` → `KycRequired`, `authorization_expired` →
      `TransactionExpired`, `not_user_wallet` → `NotAssetOwner`.
-   - Join, pay, claim, draw and group creation fail with `TransactionFailed` until parts 5 and 6.
-5. `StellarKotiziClient` actions: join (+ first installment as a second relayed call), pay, claim,
-   draw now, identity, faucet and the checkout's deposit; one relayed call at a time.
+5. `StellarKotiziClient` actions. **Done** (`stellar/client.ts`, tested):
+   - **Relay** (`relay()`): `POST /v1/tx/prepare { fn, groupId, index?, wallet }` →
+     `{ transaction, validUntilLedger, payloads }`; each 32-byte payload is signed by the session's
+     wallet (`signHash`) and sent as 64-byte hex to `POST /v1/tx/relay`, which answers `{ txHash }` once
+     confirmed. A payload for any address but the session's wallet is refused before signing
+     (`NotAssetOwner`); no signer → `SessionExpired`; one relayed call at a time (`createSerialQueue`).
+     The client trusts the backend to build the call it asked for (it doesn't decode the XDR).
+   - `joinGroup`: `join_group`, then `pay_quota` for the new share when `payFirstQuota` (two relayed
+     calls; the new share is the one the wallet didn't hold before). Not atomic like the mock: if the
+     payment fails, the share exists unpaid and the join screen shows the payment's error.
+     `payQuota`/`claimPrize` relay `pay_quota`/`claim_prize`.
+   - `drawNow` → `POST /v1/groups/:id/draw` (`toDrawStep`). `drawUntilSettled` now waits up to 45 s
+     by default (the drand round is 30 s ahead and the backend settles a few seconds after it).
+   - `testing.fundUsdc` → `POST /v1/faucet` (fixed `FAUCET_AMOUNT_USDC`, once per wallet per day);
+     `testing.depositShortfall` funds only when the wallet's demo-token balance can't cover the amount.
+   - **Checked on testnet (2026-10-25)** with this client in a script against a local backend in
+     `AUTH_MODE=dev` (a throwaway key signing instead of Privy): identity + account activation, faucet,
+     join and pay through the relay (the contract accepted the ed25519 signatures), a refusal mapped
+     to `GroupNotOpen`, and "draw now" reaching the keeper.
+   - **The backend's keeper draws on the due date with whatever paid** (it doesn't know the app's 80%
+     threshold): on a short-period group the draw can start after the first payment and freeze the
+     others' (`GroupNotOpen`). For demos where only "Draw now" should draw, run the backend with
+     `KEEPER_ENABLED=false`.
 6. Admin group creation with Freighter: the admin connects Freighter on the admin screen, the app
    builds `create_group` with `@stellar/stellar-sdk` (simulated on the RPC from `/v1/config`),
    Freighter signs, the app sends it and waits for the result; a token picker from `/v1/config`.
@@ -409,7 +429,8 @@ events into a share activity route (payment history is shown as out of scope tod
   doesn't hold it. After approving, `/verify` waits for a fresh read showing the record, then shows
   "Your identity is verified." with a "Go to home" (or "Continue") button; it never redirects on its
   own. The form (full name, CPF masked `000.000.000-00`, date of birth; `src/lib/identity.ts`: 18+,
-  any 11-digit CPF passes in the demo) is a labelled **demo**: validated in the browser, never sent or
+  any 11-digit CPF passes in the demo) is a **demo** (no "Demo" badge on screen, user decision
+  2026-10-25): validated in the browser, never sent or
   stored; `KotiziClient.verifyIdentity(wallet)` asks the backend's KYC mock (`POST /v1/kyc`,
   `KYC_MODE=auto`), which only receives the wallet. `kyc_unavailable` → `IdentityVerificationUnavailable`.
 - **Test helpers never on mainnet** (user rule): the checkout's deposit, failure simulation and the
@@ -418,8 +439,9 @@ events into a share activity route (payment history is shown as out of scope tod
   true; hidden while unknown or on error.
 - **Checkout, no balance** (user decision, 2026-10-12): the app keeps no balance and shows none.
   Money comes in with each payment: `CheckoutDialog` (review → "Pay with" Bank transfer / Pix / Crypto
-  → that method's instructions → "Confirm payment"/"Confirm and join" → "Confirming your payment…" →
-  the action's own toast). The methods and their mock data live in `checkout/deposit-methods.tsx`,
+  → that method's instructions → "Confirm payment"/"Confirm and join"; the checkout closes and the
+  status dialog shows "Confirming your payment…", then the action's progress and outcome, see
+  "Status dialog"). The methods and their mock data live in `checkout/deposit-methods.tsx`,
   with no demo labels. On test networks the deposit is `testing.depositShortfall({ owner, amount })`:
   it adds only what the account's wallet lacks (null when it covers it). The mock credits exactly the
   shortfall; the backend faucet mints its own fixed amount once per wallet per day, so a second
@@ -459,9 +481,20 @@ events into a share activity route (payment history is shown as out of scope tod
   `/groups/[id]/join`, `/groups/[id]/credit`, `/payments`, `/draws`, `/verify`, `/admin/groups/new`.
   Not implemented, pending decisions: pt-BR/i18n, BRL. Shown as out of scope: Pix, autopay, payment
   history, "use for purchase" / "withdraw via Pix".
+- **Status dialog, no toasts** (user decision, 2026-10-25): every action's progress, outcome and
+  failure show in one dialog, the one the checkout uses after a payment: `ActionStatusDialog`
+  (`components/shell/action-status-dialog.tsx`, mounted once in `app/providers.tsx`) reads
+  `chain/action-status.ts` (`showActionStatus`, `closeActionStatus`, `useActionStatus`).
+  `useChainAction().run(key, action, { pending, success, failure? }, { feedback? })` drives it: the
+  pending title with a spinner (it can't be closed while running), then the outcome (`success`: a title
+  or `{ title, description?, tone: "success" | "info" }`, with "Done"), or the failure (`failure` as
+  the title, the error's message under it, "Close"; a cancelled confirmation is neutral, "Nothing was
+  sent."). `feedback: "errors"` opens it only on a failure (`/verify` shows its own progress). The
+  checkout drives it for its deposit (`Payment not completed` with "Try again", or "Deposit limit
+  reached" as a warning) and hands over to the action in the same dialog. "Draw now": "Share
+  contemplated" (success), "Draw started" or "No draw yet" with the reason (info). `sonner` is gone.
+  E2E: `closeStatus(page, title)` (`e2e/helpers.ts`) waits for the outcome and clicks "Done".
 - **Screen states**:
-  - Toasts sit bottom right (`providers.tsx`), clear of screen titles; below lg 100 px up, above the
-    tab bar.
   - `html` has `color-scheme: dark`, and autofilled inputs keep the field's surface and text
     (`globals.css`).
   - Privy's modal uses the graphite background (`appearance.theme: "#171717"`).
