@@ -32,7 +32,7 @@ describe('dev authenticator', () => {
 });
 
 describe('config', () => {
-  const base = {};
+  const base = { CONTRACT_ID: `C${'A'.repeat(55)}`, SPONSOR_KEYFILE: 'sponsor.key' };
   it('refuses dev auth in production', () => {
     expect(() => loadConfig({ ...base, NODE_ENV: 'production', AUTH_MODE: 'dev' })).toThrow(/production/);
   });
@@ -40,6 +40,17 @@ describe('config', () => {
     expect(() => loadConfig({ ...base })).toThrow(/PRIVY_APP_ID/);
     expect(loadConfig({ ...base, PRIVY_APP_ID: 'a', PRIVY_APP_SECRET: 'b' }).AUTH_MODE).toBe('privy');
     expect(loadConfig({ ...base, AUTH_MODE: 'dev' }).AUTH_MODE).toBe('dev');
+  });
+  it('serves Stellar testnet only', () => {
+    const dev = { ...base, AUTH_MODE: 'dev' };
+    expect(() => loadConfig({ ...dev, NETWORK_PASSPHRASE: 'Public Global Stellar Network ; September 2015' })).toThrow(/testnet/);
+    expect(() => loadConfig({ AUTH_MODE: 'dev', SPONSOR_KEYFILE: 'k' })).toThrow(); // no contract id
+    expect(() => loadConfig({ ...dev, CONTRACT_ID: 'GABC' })).toThrow(/CONTRACT_ID/);
+  });
+  it('needs a key file for each server-side feature it enables', () => {
+    const dev = { ...base, AUTH_MODE: 'dev' };
+    expect(() => loadConfig({ ...dev, KYC_MODE: 'auto' })).toThrow(/KYC_KEYFILE/);
+    expect(() => loadConfig({ ...dev, FAUCET_ENABLED: 'true' })).toThrow(/MINT_KEYFILE/);
   });
 });
 

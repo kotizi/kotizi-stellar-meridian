@@ -592,7 +592,20 @@ fn an_unclaimed_prize_never_blocks_the_next_draw() {
     let g = s.kotizi.get_group(&id);
     assert_eq!(g.unclaimed_total, QUOTA * 6);
     assert_eq!(g.vault, QUOTA * 6);
+    let w = s.kotizi.winners(&id);
+    assert_eq!(w.len(), 2);
+    let mut rounds: std::vec::Vec<u32> = w.iter().map(|x| x.won_round).collect();
+    rounds.sort();
+    assert_eq!(rounds, std::vec![0, 1]);
+    assert!(w.iter().all(|x| x.gross == QUOTA * 3));
+    let mut expected = std::vec![first, second];
+    expected.sort();
+    assert_eq!(
+        w.iter().map(|x| x.index).collect::<std::vec::Vec<_>>(),
+        expected
+    ); // by cota index
     s.kotizi.claim_prize(&id, &first); // the old prize is still claimable
+    assert_eq!(s.kotizi.winners(&id).len(), 2); // kept after the claim
     assert_eq!(s.kotizi.get_group(&id).vault, QUOTA * 3);
 }
 

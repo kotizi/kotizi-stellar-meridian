@@ -8,6 +8,13 @@
       "when": 1792937655073,
       "tag": "0000_huge_mandarin",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792946421616,
+      "tag": "0001_futuristic_silverclaw",
+      "breakpoints": true
     }
   ]
 }

@@ -23,7 +23,7 @@ use events::{
     DrawRequested, DrawSettled, GroupCreated, KycApproved, MemberJoined, PrizeClaimed, QuotaPaid,
 };
 use types::*;
-pub use types::{Config, DataKey, Group, Prize, Status};
+pub use types::{Config, DataKey, Group, Prize, Status, Winner};
 
 #[contract]
 pub struct Kotizi;
@@ -440,6 +440,27 @@ impl Kotizi {
         e.storage()
             .persistent()
             .get(&DataKey::Prize(group_id, index))
+    }
+
+    /// Every cota that has won with its prize, by cota index: one call instead of one per cota.
+    pub fn winners(e: &Env, group_id: u32) -> soroban_sdk::Vec<Winner> {
+        let group = load_group(e, group_id);
+        let mut out = soroban_sdk::Vec::new(e);
+        for index in 0..group.members_joined {
+            if group.won_bitmap & (1u64 << index) != 0 {
+                let prize: Prize = e
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Prize(group_id, index))
+                    .expect("a winner has a prize");
+                out.push_back(Winner {
+                    index,
+                    gross: prize.gross,
+                    won_round: prize.won_round,
+                });
+            }
+        }
+        out
     }
 
     pub fn group_count(e: &Env) -> u32 {

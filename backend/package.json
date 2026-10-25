@@ -16,6 +16,7 @@
     "@fastify/cors": "11.3.1",
     "@fastify/rate-limit": "11.2.1",
     "@privy-io/node": "0.35.0",
+    "@stellar/stellar-sdk": "17.2.1",
     "drizzle-orm": "0.45.4",
     "fastify": "5.12.5",
     "postgres": "3.4.9",

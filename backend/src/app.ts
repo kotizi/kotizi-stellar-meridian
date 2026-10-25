@@ -6,6 +6,12 @@ import { RelayError } from './relay/validate.js';
 import type { Deps } from './deps.js';
 import { Keeper } from './keeper.js';
 import { HttpError } from './routes/common.js';
+import { drawRoutes } from './routes/draw.js';
+import { groupRoutes } from './routes/groups.js';
+import { infoRoutes } from './routes/info.js';
+import { meRoutes } from './routes/me.js';
+import { onboardingRoutes } from './routes/onboarding.js';
+import { relayRoutes } from './routes/relay.js';
 
 /** Name, message and the nested cause chain as plain strings, safe to log and to return in dev. */
 export function describeError(e: unknown): string {
@@ -47,9 +53,11 @@ export async function buildApp(deps: Deps, opts: { logger?: boolean } = {}): Pro
   });
 
   app.decorate('keeper', new Keeper(deps, app.log));
-  app.decorate('invalidateReads', () => {});
-
-  app.get('/healthz', async () => ({ ok: true }));
-  // TODO(stellar), task 5: /v1/config, /v1/groups, /v1/me, /v1/kyc, /v1/faucet, /v1/tx/relay, /v1/groups/:id/draw.
+  infoRoutes(app, deps);
+  groupRoutes(app, deps);
+  meRoutes(app, deps);
+  onboardingRoutes(app, deps);
+  relayRoutes(app, deps);
+  drawRoutes(app, deps);
   return app;
 }

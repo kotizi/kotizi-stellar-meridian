@@ -81,6 +81,15 @@ pub struct Prize {
     pub won_round: u32,
 }
 
+/// A won cota with its prize, as returned in bulk by `winners`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Winner {
+    pub index: u32,
+    pub gross: i128,
+    pub won_round: u32,
+}
+
 pub fn token_id(group_id: u32, index: u32) -> u32 {
     (group_id << 8) | index
 }

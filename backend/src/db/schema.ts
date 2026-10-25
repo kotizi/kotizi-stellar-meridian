@@ -1,4 +1,4 @@
-import { bigint, index, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { bigint, index, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 
 /** One row per transaction the relay (or keeper) paid for; drives the rate limits. */
 export const sponsoredTx = pgTable(
@@ -33,4 +33,19 @@ export const faucetClaims = pgTable(
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [index('faucet_claims_wallet_created').on(t.wallet, t.createdAt)],
+);
+
+/**
+ * Secrets of the draws the keeper has committed to (`request_draw`), kept until `settle_draw` reveals them.
+ * Stored in clear for the testnet demo: whoever reads this table can predict the winner of a pending draw.
+ */
+export const drawSecrets = pgTable(
+  'draw_secrets',
+  {
+    commitment: text('commitment').primaryKey(),
+    groupId: integer('group_id').notNull(),
+    secret: text('secret').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [index('draw_secrets_group').on(t.groupId)],
 );
