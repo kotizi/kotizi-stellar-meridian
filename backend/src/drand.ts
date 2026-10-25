@@ -36,7 +36,8 @@ export class DrandBeacons implements Beacons {
 
   async signature(round: bigint): Promise<Uint8Array | null> {
     const res = await this.fetchFn(`${this.baseUrl}/${QUICKNET_HASH}/public/${round}`, { signal: AbortSignal.timeout(10_000) });
-    if (res.status === 404) return null;
+    // 404: unknown round; 425 (Too Early): the relay answers a round that is not due yet
+    if (res.status === 404 || res.status === 425) return null;
     if (!res.ok) throw new Error(`drand answered ${res.status}`);
     const body = (await res.json()) as { round?: number; signature?: string };
     if (BigInt(body.round ?? -1) !== round || typeof body.signature !== 'string') throw new Error('drand answered another round');

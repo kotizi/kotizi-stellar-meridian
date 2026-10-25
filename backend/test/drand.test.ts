@@ -34,6 +34,7 @@ describe('drand', () => {
     expect(urls[0]).toBe(`https://relay.test/${QUICKNET_HASH}/public/1000000`);
 
     expect(await new DrandBeacons('https://relay.test', ok({}, 404) as typeof fetch).signature(5n)).toBeNull();
+    expect(await new DrandBeacons('https://relay.test', ok({}, 425) as typeof fetch).signature(5n)).toBeNull(); // drand: Too Early
     await expect(new DrandBeacons('https://relay.test', ok({}, 500) as typeof fetch).signature(5n)).rejects.toThrow('500');
     // the relay answers another round than asked
     await expect(new DrandBeacons('https://relay.test', ok({ round: 7, signature: SIG }) as typeof fetch).signature(1_000_000n)).rejects.toThrow('another round');
