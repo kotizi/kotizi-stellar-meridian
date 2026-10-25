@@ -1,0 +1,31 @@
+.DS_Store
+node_modules
+.yarn
+
+# internal planning prompt: kept locally, never pushed
+KICKOFF_PROMPT.md
+
+# Soroban/Rust contract build output (once contract/ exists)
+target/
+.stellar/
+
+# secrets: never commit keys (note: no blanket *.json ignore, specs/configs are tracked)
+keypairs/
+.keypairs/
+*-keypair.json
+*-secret.json
+id.json
+.env
+.env.*
+!.env.example
+
+# generated from the deployed contract via `stellar contract bindings typescript`; commit once frozen
+backend/src/generated/
+frontend/src/chain/stellar/generated/
+
+backend/.pglite/
+backend/.vitest/
+
+frontend/.next/
+frontend/next-env.d.ts
+frontend/tsconfig.tsbuildinfo

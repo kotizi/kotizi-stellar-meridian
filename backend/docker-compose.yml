@@ -1,0 +1,15 @@
+# Postgres for production-like runs. Without it the API uses embedded PGlite.
+#   docker compose up -d && DATABASE_URL=postgres://kotizi:kotizi@localhost:5432/kotizi npm start
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: kotizi
+      POSTGRES_PASSWORD: kotizi
+      POSTGRES_DB: kotizi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

@@ -1,0 +1,555 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-archivo), Arial, sans-serif;
+  --font-mono: var(--font-plex-mono), "Courier New", monospace;
+  --font-heading: var(--font-archivo), Arial, sans-serif;
+  --color-kotizi-blue: var(--kotizi-blue);
+  --color-deep-blue: var(--deep-blue);
+  --color-lavender: var(--lavender);
+  --color-mist: var(--mist);
+  --color-graphite: var(--graphite);
+  --color-cyan: var(--cyan);
+  /* Semantic colors (design system · Color · Tokens semánticos), exposed per property so the
+     utilities keep the Figma names: bg-surface, text-secondary, border-subtle, ring-default. */
+  --background-color-canvas: var(--bg-canvas);
+  --background-color-surface: var(--bg-surface);
+  --background-color-surface-raised: var(--bg-surface-raised);
+  --background-color-inverse: var(--bg-inverse);
+  --background-color-brand: var(--bg-brand);
+  --background-color-brand-hover: var(--bg-brand-hover);
+  --background-color-brand-pressed: var(--bg-brand-pressed);
+  --background-color-brand-subtle: var(--bg-brand-subtle);
+  --background-color-hover: var(--bg-hover);
+  --background-color-pressed: var(--bg-pressed);
+  --background-color-disabled: var(--bg-disabled);
+  --background-color-control: var(--bg-control);
+  --background-color-success-subtle: var(--bg-success-subtle);
+  --background-color-error-subtle: var(--bg-error-subtle);
+  --background-color-warning-subtle: var(--bg-warning-subtle);
+  --background-color-info-subtle: var(--bg-info-subtle);
+  --text-color-primary: var(--text-primary);
+  --text-color-secondary: var(--text-secondary);
+  --text-color-tertiary: var(--text-tertiary);
+  --text-color-disabled: var(--text-disabled);
+  --text-color-inverse: var(--text-inverse);
+  --text-color-on-brand: var(--text-on-brand);
+  --text-color-on-status: var(--text-on-status);
+  --text-color-brand: var(--text-brand);
+  --text-color-brand-hover: var(--text-brand-hover);
+  --border-color-subtle: var(--border-subtle);
+  --border-color-default: var(--border-default);
+  --border-color-strong: var(--border-strong);
+  --border-color-brand: var(--border-brand);
+  --border-color-focus: var(--border-focus);
+  --border-color-error: var(--border-error);
+  --border-color-inverse: var(--border-inverse);
+  --ring-color-default: var(--border-default);
+  --ring-color-focus: var(--border-focus);
+  --ring-color-subtle: var(--border-subtle);
+  --ring-color-inverse: var(--border-inverse);
+  /* Status colors work for every property (bg, text, icon, border). */
+  --color-success: var(--bg-success);
+  --color-error: var(--bg-error);
+  --color-warning: var(--bg-warning);
+  --color-info: var(--bg-info);
+  /* Radius scale (design system · Espaciado, radios y tamaños): buttons and chips use full (pill),
+     fields md, cards lg/xl. The symbol and brand modules keep their 45° cuts, never rounded. */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+  --radius-2xl: 32px;
+  /* Elevation (design system · Efectos y gradientes): denser shadows because the UI is dark.
+     1 = cards at rest, 2 = menus and popovers, 3 = modals and floating elements. */
+  --shadow-elevation-1: 0 1px 2px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3);
+  --shadow-elevation-2: 0 4px 12px rgb(0 0 0 / 0.5), 0 2px 4px rgb(0 0 0 / 0.35);
+  --shadow-elevation-3: 0 16px 40px rgb(0 0 0 / 0.6), 0 4px 12px rgb(0 0 0 / 0.4);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+}
+
+:root {
+  /* Primitive scales (design system · Color · Escalas primitivas). Raw values: components use the
+     semantic tokens below, never these. Sampled from screenshots of the Figma (estimates); green, red
+     and amber are marked there as a proposal for feedback states. */
+  --blue-50: #eeeeff;
+  --blue-100: #dadaff;
+  --blue-200: #b5b5ff;
+  --blue-300: #8080ff;
+  --blue-400: #4747ff;
+  --blue-500: #0000ff;
+  --blue-600: #0000db;
+  --blue-700: #0000b3;
+  --blue-800: #03088d;
+  --blue-900: #020658;
+  --lavender-100: #ededfb;
+  --lavender-300: #d3d3f6;
+  --lavender-500: #b6b6f0;
+  --lavender-700: #8a8ad6;
+  --gray-0: #ffffff;
+  --gray-50: #f7f7f7;
+  --gray-100: #ececec;
+  --gray-200: #dcdcdc;
+  --gray-300: #bdbdbd;
+  --gray-400: #a3a3a3;
+  --gray-500: #737373;
+  --gray-600: #525252;
+  --gray-700: #3a3a3a;
+  --gray-800: #252525;
+  --gray-850: #1f1f1f;
+  --gray-900: #171717;
+  --gray-950: #0e0e0e;
+  --cyan-50: #e5f5fe;
+  --cyan-500: #019bf9;
+  --cyan-900: #03324f;
+  --green-50: #e8f8ef;
+  --green-400: #3dd68c;
+  --green-600: #0b7a47;
+  --green-900: #0b3a24;
+  --red-50: #fdecec;
+  --red-400: #ff6b6b;
+  --red-600: #d92d2d;
+  --red-900: #4a1515;
+  --amber-50: #fff5dd;
+  --amber-400: #ffc247;
+  --amber-600: #946000;
+  --amber-900: #47320a;
+  --white-alpha-8: rgb(255 255 255 / 0.08);
+  --white-alpha-16: rgb(255 255 255 / 0.16);
+  --white-alpha-24: rgb(255 255 255 / 0.24);
+  --black-alpha-4: rgb(0 0 0 / 0.04);
+  --black-alpha-8: rgb(0 0 0 / 0.08);
+  --black-alpha-12: rgb(0 0 0 / 0.12);
+  --black-alpha-16: rgb(0 0 0 / 0.16);
+  --black-alpha-40: rgb(0 0 0 / 0.4);
+
+  /* Brand palette (design/Brandbook Kotizi.pdf, section 04; design system · Paleta de marca). */
+  --kotizi-blue: var(--blue-500);
+  --deep-blue: var(--blue-800);
+  --lavender: var(--lavender-500);
+  --mist: var(--gray-100);
+  --graphite: var(--gray-900);
+  --cyan: var(--cyan-500); /* restricted: only as a light point in gradients and the info tone */
+
+  /* Grain of the "Luz Kotizi" (high-contrast fractal noise at 50% alpha; mid-grey would be neutral under overlay), blended with overlay on the light. */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='1.2 1.2 1.2 0 -1.3 1.2 1.2 1.2 0 -1.3 1.2 1.2 1.2 0 -1.3 0 0 0 0 .5'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  /* Semantic tokens, dark mode (design system · Color · Semánticos · Oscuro). Light mode isn't built. */
+  --bg-canvas: var(--gray-900);
+  --bg-surface: var(--gray-850);
+  --bg-surface-raised: var(--gray-800);
+  --bg-inverse: var(--gray-0);
+  --bg-brand: var(--blue-500);
+  --bg-brand-hover: var(--blue-600);
+  --bg-brand-pressed: var(--blue-700);
+  --bg-brand-subtle: var(--blue-900);
+  --bg-accent: var(--lavender-500);
+  --bg-hover: var(--white-alpha-8);
+  --bg-pressed: var(--white-alpha-16);
+  --bg-disabled: var(--gray-800);
+  --bg-control: var(--gray-700);
+  --bg-success: var(--green-400);
+  --bg-error: var(--red-400);
+  --bg-warning: var(--amber-400);
+  --bg-info: var(--cyan-500);
+  --bg-success-subtle: var(--green-900);
+  --bg-error-subtle: var(--red-900);
+  --bg-warning-subtle: var(--amber-900);
+  --bg-info-subtle: var(--cyan-900);
+  --text-primary: var(--gray-0);
+  --text-secondary: var(--gray-300);
+  /* The Figma swatch reads darker (~gray-500); gray-400 keeps 11 px captions at ~7:1 on canvas. */
+  --text-tertiary: var(--gray-400);
+  /* The Figma uses gray-600 (~2:1 on surfaces, unreadable on labels like "Group is full"); gray-500
+     keeps disabled text clearly dimmed but legible (3.2-3.8:1). */
+  --text-disabled: var(--gray-500);
+  --text-inverse: var(--gray-900);
+  --text-on-brand: var(--gray-0);
+  --text-on-accent: var(--gray-900);
+  --text-on-status: var(--gray-900);
+  --text-brand: var(--lavender-500);
+  --text-brand-hover: var(--lavender-300);
+  --border-subtle: var(--white-alpha-8);
+  --border-default: var(--white-alpha-16);
+  --border-strong: var(--gray-500);
+  --border-brand: var(--lavender-500);
+  --border-focus: var(--lavender-500);
+  --border-error: var(--red-400);
+  --border-inverse: var(--gray-0);
+
+  /* Dark mode is the brand standard: 60% graphite, 30% Kotizi blue, 10% lavender + white. */
+  --background: var(--bg-canvas);
+  --foreground: var(--text-primary);
+  --card: var(--bg-surface);
+  --card-foreground: #ffffff;
+  --popover: var(--bg-surface);
+  --popover-foreground: #ffffff;
+  --primary: var(--bg-brand);
+  --primary-foreground: #ffffff;
+  --secondary: var(--bg-surface-raised);
+  --secondary-foreground: #ffffff;
+  --muted: var(--bg-surface-raised);
+  --muted-foreground: var(--text-tertiary);
+  --accent: var(--bg-surface-raised);
+  --accent-foreground: #ffffff;
+  --destructive: var(--bg-error);
+  --border: var(--border-subtle);
+  --input: var(--border-default);
+  --ring: var(--border-focus);
+  --chart-1: var(--kotizi-blue);
+  --chart-2: var(--lavender);
+  --chart-3: var(--deep-blue);
+  --chart-4: var(--cyan);
+  --chart-5: var(--mist);
+  --radius: var(--radius-md); /* shadcn base, only read by the toasts (sonner) */
+  --sidebar: var(--bg-canvas);
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: var(--kotizi-blue);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--bg-surface-raised);
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--lavender);
+}
+
+/* "Luz Kotizi" (brandbook 6.3, design system Átomos · Marca): a blurred light rising left to right,
+   blue around a lavender-white core, with grain on top. Use through <Luz /> (src/components/kz/luz.tsx):
+   the grain sits on a sibling layer because the blur would smear it. Text never sits on its brightest point. */
+@utility luz {
+  position: absolute;
+  left: -260px;
+  top: 360px;
+  width: 920px;
+  height: 380px;
+  transform: rotate(-24deg);
+  pointer-events: none;
+}
+
+@utility luz-card {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+@utility luz-light {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(30% 30% at 66% 40%, #ececec 0%, rgb(182 182 240 / 0.85) 45%, rgb(75 75 255 / 0) 100%),
+    radial-gradient(50% 50% at 50% 50%, #4b4bff 0%, #0000ff 45%, rgb(3 8 141 / 0.6) 70%, rgb(3 8 141 / 0) 100%);
+  filter: blur(48px);
+}
+
+@utility luz-grain {
+  position: absolute;
+  inset: 0;
+  background: var(--grain) 0 0 / 160px 160px;
+  mix-blend-mode: overlay;
+  mask-image: radial-gradient(50% 50% at 50% 50%, #000 40%, transparent 100%);
+}
+
+/* Blue plan card with the light in the lower-right corner (the K seal sits top-right). The core sits
+   past the corner so labels in the bottom-right never land on its brightest point (brandbook 6.3). */
+@utility card-plano {
+  background:
+    var(--grain) 0 0 / 160px 160px,
+    radial-gradient(75% 110% at 100% 125%, rgb(236 236 236 / 0.95) 0%, rgb(182 182 240 / 0.75) 30%, rgb(0 0 255 / 0) 75%),
+    linear-gradient(160deg, #0000ff 0%, #0000ff 60%, #03088d 100%);
+  color: #ffffff;
+  background-blend-mode: overlay, normal, normal;
+}
+
+/* App icon background: Kotizi blue with the light in the lower-left corner. */
+@utility app-icon {
+  background:
+    radial-gradient(80% 80% at 0% 100%, rgb(236 236 236 / 0.9) 0%, rgb(182 182 240 / 0.6) 30%, rgb(0 0 255 / 0) 70%),
+    #0000ff;
+}
+
+/* "Vidrio": translucent panel over the light, 24 px backdrop blur and a 16% white stroke. */
+@utility vidro {
+  background: rgb(23 23 23 / 0.78);
+  border: 1px solid rgb(255 255 255 / 0.16);
+  backdrop-filter: blur(24px);
+}
+
+/* Focus ring from the design system (Átomos · Selección): 2 px outer ring in lavender, keyboard focus only. */
+@utility focus-ring {
+  outline: none;
+  &:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+  }
+}
+
+/* Page grid (design system · Grilla): 12 columns with a 24 px gutter on desktop, margins 64 / 80 / 96
+   from 1024 / 1440 / 1920 px (1440 is the design reference). The Figma defines no mobile grid; below
+   1024 it uses 4 columns, 16 px gutter and 24 px margins. Sets columns and margins only: pair it with
+   `grid` (or `lg:grid`) and place children with col-span-*. */
+@utility page-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 16px;
+  padding-inline: 24px;
+  @media (width >= 64rem) {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    column-gap: 24px;
+    padding-inline: 64px;
+  }
+  @media (width >= 90rem) {
+    padding-inline: 80px;
+  }
+  @media (width >= 120rem) {
+    padding-inline: 96px;
+  }
+}
+
+/* Interface gradients (design system · Efectos y gradientes). Brand pieces use the blurred <Luz />;
+   these crisp ones are for special buttons, bars and card backgrounds. */
+/* Luz Kotizi/Diagonal: from bottom-left to top-right, blue to lavender. */
+@utility bg-luz-diagonal {
+  background-image: linear-gradient(45deg, #0000ff 0%, #4b4bff 30%, #b6b6f0 75%, #ececec 100%);
+}
+
+/* Luz Kotizi/Profunda: graphite to deep blue to blue. Hero backgrounds and featured cards. */
+@utility bg-luz-profunda {
+  background-image: linear-gradient(180deg, #171717 0%, #03088d 50%, #0000ff 100%);
+}
+
+/* Text styles (design system · Tipografía): size / line height · weight · tracking, read from the Figma.
+   Archivo for titles and text, IBM Plex Mono for figures, amounts, percentages and statuses.
+   Utilities (not --text-* theme sizes) because `cn` drops a theme size when a text color follows it. */
+@utility type-display {
+  font-family: var(--font-sans);
+  font-size: 96px;
+  line-height: 96px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+@utility type-h1 {
+  font-family: var(--font-sans);
+  font-size: 56px;
+  line-height: 60px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+@utility type-h2 {
+  font-family: var(--font-sans);
+  font-size: 40px;
+  line-height: 48px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+@utility type-h3 {
+  font-family: var(--font-sans);
+  font-size: 32px;
+  line-height: 40px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+@utility type-h4 {
+  font-family: var(--font-sans);
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+@utility type-h5 {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+@utility type-body-lg {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+@utility type-body-md {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+@utility type-body-sm {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+@utility type-label-lg {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+@utility type-label-md {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+@utility type-label-sm {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+@utility type-mono-caption {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+/* Overline and Micro are uppercase. Never use them on addresses or hashes (base58 is case-sensitive). */
+@utility type-mono-overline {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+@utility type-mono-micro {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* Data: amounts and figures. Data/Large is the one highlighted number per screen. */
+@utility type-data-lg {
+  font-family: var(--font-mono);
+  font-size: 40px;
+  line-height: 48px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+@utility type-data-md {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+@utility type-data-sm {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+/* Brand signature ("your own home / no down payment."): Medium and Light lines together. */
+@utility type-firma {
+  font-family: var(--font-sans);
+  font-size: 48px;
+  line-height: 48px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+}
+@utility type-firma-light {
+  font-family: var(--font-sans);
+  font-size: 48px;
+  line-height: 48px;
+  font-weight: 300;
+  letter-spacing: -0.03em;
+}
+
+/* Mono/Micro in the caption color: the default label above values, lists and cards. */
+@utility label-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  html {
+    @apply font-sans;
+    /* Native controls (date picker icon, scrollbars) drawn for a dark page. */
+    color-scheme: dark;
+  }
+  /* Browser autofill paints its own light background: keep the field's surface and text instead
+     (inputs are transparent inside a bg-surface wrapper). */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--text-primary);
+    caret-color: var(--text-primary);
+    box-shadow: 0 0 0 1000px var(--bg-surface) inset;
+    transition: background-color 9999s;
+  }
+  /* Toasts clear the tab bar (84 px, below lg). Sonner's `mobileOffset` only applies up to 600 px
+     and it sets the offset inline, hence !important for the widths in between. */
+  @media (width < 64rem) {
+    [data-sonner-toaster] {
+      --offset-bottom: 100px !important;
+    }
+  }
+  /* Icon stroke from the design system (Átomos · Íconos, a proposal the brandbook doesn't define yet):
+     1.5 px, straight ends and angled joins, echoing the 45° cut of the symbol. Square caps keep
+     zero-length dots (like the one in "info") visible. Utilities still win (later layer).
+     Plain selector on purpose: the production build drops `:where(svg.lucide)`. */
+  svg.lucide {
+    stroke-width: 1.5;
+    stroke-linecap: square;
+    stroke-linejoin: miter;
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "kotizi-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Kotizi API: Privy-authenticated gas relay (Stellar fee-bump), demo KYC and faucet, group reads, draw keeper",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "start": "tsx --env-file-if-exists=.env src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@fastify/cors": "11.3.1",
+    "@fastify/rate-limit": "11.2.1",
+    "@privy-io/node": "0.35.0",
+    "drizzle-orm": "0.45.4",
+    "fastify": "5.12.5",
+    "postgres": "3.4.9",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "drizzle-kit": "0.31.11",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "7.3.1",
+    "vitest": "5.0.3"
+  }
+}
