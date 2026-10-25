@@ -83,7 +83,13 @@ Eligibility = `paid_bitmap & !won_bitmap`. Winner = k-th set bit, `k = random % 
 vault can never owe more than it holds. Group completes after `max_members` rounds. Same rules as the reference (draws on
 partial groups, prizes per cota, an unclaimed prize never blocks a draw, claimable any time).
 
-### TTL policy (agreed direction 2026-10-25; constants fixed after `stellar network settings` on testnet)
+### TTL policy (agreed direction 2026-10-25)
+
+Testnet values read with `stellar network settings` (2026-10-25): `max_entry_ttl` = 3,110,400 ledgers (~180 days at 5 s/ledger),
+`min_persistent_ttl` = 120,960 (~7 days), ledger close 5 s. Per-transaction limits relevant here: 200 disk-read entries,
+200 write entries, 400 footprint entries, 400M instructions, entry size 64 KiB. Our calls touch well under 20 entries.
+With the threshold at half the maximum, a touched entry is re-extended whenever less than ~90 days remain; the keeper's
+external extension must therefore run at least every ~90 days (in practice daily, it is cheap).
 
 Facts used (Stellar state-archival docs): entries have `liveUntilLedger`; persistent/instance entries are **archived** at TTL 0,
 not deleted; instance storage shares one TTL with the contract instance; the maximum TTL is a network parameter measured from

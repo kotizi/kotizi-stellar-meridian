@@ -1,0 +1,19 @@
+[package]
+name = "kotizi"
+description = "Kotizi: tokenized consórcio (ROSCA) on Soroban"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+stellar-tokens = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+test-usdc = { path = "../test-usdc" }
