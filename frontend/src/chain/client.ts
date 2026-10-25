@@ -42,9 +42,10 @@ export interface KotiziClient {
   joinGroup(args: { owner: Address; group: GroupId; payFirstQuota?: boolean }): Promise<TxResult & { membership: MembershipId }>;
   payQuota(args: { owner: Address; membership: MembershipId }): Promise<TxResult>;
   /**
-   * "Draw now": runs the group's next draw step, `request_draw` (commits to a future ledger) or
-   * `settle_draw` (reveals that ledger's hash and picks the winner), or says why there is none yet. Both steps are
-   * permissionless and sponsored; a keeper also runs them on its own, so nobody has to click.
+   * "Draw now": runs the group's next draw step, `request_draw` (fixes a future drand round) or
+   * `settle_draw` (the contract verifies that round's beacon and picks the winner), or says why there
+   * is none yet. Both steps are permissionless and sponsored; a keeper also runs them on its own, so
+   * nobody has to click.
    */
   drawNow(args: { group: GroupId }): Promise<DrawStep>;
   /** Pays the share's prize (won in any round) to the NFT owner, minus the admin fee. */

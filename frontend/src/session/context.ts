@@ -8,11 +8,12 @@ export type LoginMethod = "email" | "wallet";
 
 /**
  * Signs with the session's wallet, without sending. Plain bytes in and out, so the session doesn't
- * depend on a chain SDK; the chain client builds the transaction.
+ * depend on a chain SDK; the chain client decides what to sign.
  *
- * Privy treats Stellar as a raw-signing chain: the client sends the transaction hash and gets the
- * signature back (task 6). The app's backend wraps the signed transaction in a fee-bump envelope
- * and pays the fee, so users never need XLM.
+ * The wallet never signs a transaction: the app's backend builds it with its sponsor as the source
+ * (so it pays the fee and the storage rent, and users never need XLM) and asks the wallet to sign
+ * only the 32-byte payload of each Soroban authorization entry. Privy treats Stellar as a raw-signing
+ * chain, so that payload is signed as a raw hash.
  */
 export interface SessionSigner {
   address: Address;
