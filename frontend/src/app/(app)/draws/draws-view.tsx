@@ -4,7 +4,7 @@ import { Dices } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
-import type { DrawIdleReason } from "@/chain";
+import type { DrawIdleReason, Group } from "@/chain";
 import { awaitingInstallment, currentDrawNumber, currentPool, DRAW_THRESHOLD_PCT, drawPhase, eligibleBitmap, lastDrawShown, paidNeeded, popcount, prizeOf, waitsForNewMembers } from "@/chain/derive";
 import { drawUntilSettled, type DrawOutcome } from "@/chain/draw";
 import { useChainAction, useNow } from "@/chain/hooks";
@@ -40,7 +40,8 @@ const drawMessage = (outcome: DrawOutcome) =>
       : IDLE_MESSAGES[outcome.reason];
 
 /** Where the randomness comes from, in plain words. */
-const randomnessSource = () => "Hash of a future ledger (commit-reveal)";
+const randomnessSource = (group: Group) =>
+  group.drawSource === "drand" ? "drand random beacon, verified by the contract" : "Simulated (demo)";
 
 // Screen 07 · Draw of the selected share's group.
 export function DrawsView() {
@@ -162,9 +163,9 @@ function Draw({ shares }: { shares: MyShare[] }) {
                 proofHere ? (
                   <TxLink value={proofHere.signature} />
                 ) : phase === "pending" ? (
-                  `${randomnessSource()} · ledger ${group.commitLedger}`
+                  `${randomnessSource(group)} · round ${group.drawRound}`
                 ) : (
-                  <span className="text-tertiary">{revealed ? randomnessSource() : "Waiting"}</span>
+                  <span className="text-tertiary">{revealed ? randomnessSource(group) : "Waiting"}</span>
                 )
               }
             />

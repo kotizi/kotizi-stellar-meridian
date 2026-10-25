@@ -175,7 +175,7 @@ scope (roadmap only): marketplace, bids, default handling, real KYC provider, pr
 - Draws: `KotiziClient.drawNow({ group })` runs the next step (`request_draw` or `settle_draw`) or
   returns why there is none (`notDue`, `noEligibleShares`, `waitingForRandomness`, `completed`, the
   keeper's reasons). `drawUntilSettled` (`src/chain/draw.ts`) makes the "Draw now" button a single
-  click. The mock picks steps the way the keeper does.
+  click. The mock picks steps the way the keeper does, on drand's clock (`src/chain/drand.ts`).
 - **Draw threshold** (user decision, 2026-10-12; frontend only, the contract doesn't know it): the
   app draws only once `DRAW_THRESHOLD_PCT` (80%, one constant in `src/chain/derive.ts`) of the
   **taken** shares paid the period's installment (`paidRequired` = ceil(joined × 80%), contemplated
@@ -256,9 +256,33 @@ fetcher; `useKyc` stops polling once the record exists (actions still refetch it
 Plan (one commit per part, `bun run quality` and `bun run build` after each; branch
 `feature/stellar-frontend-integration`):
 
-1. Dependencies and docs (this file and `README.md`). **Done.**
-2. Mock and types mirror the contract: ids like the contract's (group `"0"`, share `"0-2"`), drand
-   draws (`Group.drawRound`), the contract's error names, and token decimals.
+1. Dependencies and docs (this file and `README.md`). **Done.** Next.js moved to 16.4.3 (security
+   advisories of 16.4.0) in its own commit.
+2. Mock and types mirror the contract. **Done:**
+   - **Ids** (`src/chain/ids.ts`, tested): `Group.id` is the contract's group number as a string
+     (`"0"`, `"1"`…; `Group.groupId` the number), `Membership.id` is `"<group>-<index>"`;
+     `parseGroupId`/`parseMembershipId` refuse anything else, so a bad id never reaches the backend.
+     `Group.address` and `Membership.address` are the Kotizi contract (one for every group);
+     `Membership.asset` is the NFT token id (`nftTokenId`: `(group << 8) | index`).
+   - **Draws** (`src/chain/drand.ts`, tested): quicknet's clock as the contract uses it
+     (`roundTime`, `roundAfter`, `DRAW_ROUND_DELAY` 10, `DRAW_EXPIRY_SECS` 3600, `beaconUrl`).
+     `Group.drawSource` is `"drand"` or `"mock"`, `Group.drawRound` the pending draw's round (0 when
+     none). `/draws` names the source in `OnchainDetails` ("drand random beacon, verified by the
+     contract" · round N, or "Simulated (demo)").
+   - **Mock** (`kotizi:mock:v6`): groups numbered from 0 in one simulated contract, shares by group and
+     index; draws follow drand's clock (settle once the round is out, request again an hour after an
+     unsettled round) with a **1-round delay instead of 10**, so a mock draw settles within 3 s; the
+     winner is a local random pick (no beacon). `txReturning` answers a value from a mock
+     transaction (the new share or group id).
+   - **Units**: amounts in the app are USD with 6 decimals whatever the group's token (`types.ts`);
+     the Stellar client converts each token's decimals at its boundary (part 4).
+   - **Errors** (`errors.ts`): the Solana-only `SlotHashUnavailable` and `RandomnessNotFulfilled` are
+     gone; `InvalidBeacon`, `InsufficientVault` and `TokenNotSupported` are new. The Stellar client
+     maps the contract's names onto the app's codes (`NotKyc` → `KycRequired`…).
+   - **Explorer**: `stellarExpertUrl` (`network.ts`, tested) links transactions, contracts (`C…`) and
+     accounts (`G…`) on stellar.expert's testnet.
+   - Known for part 5: a real draw takes about 36 s (the round is 30 s ahead, plus the keeper's slack),
+     longer than `drawUntilSettled`'s default wait (10 × 1.5 s).
 3. Privy Stellar session: create the embedded Stellar wallet after login (once per account and tab,
    after Privy's modal, never while it creates the account), `SessionSigner.signHash` through
    `useSignRawHash`, the address from the linked Stellar wallets.

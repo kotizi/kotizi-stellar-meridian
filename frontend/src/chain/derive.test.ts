@@ -32,10 +32,10 @@ const bitmap = (...indexes: number[]) => bitmapOf(indexes);
 
 function makeGroup(overrides: Partial<Group> = {}): Group {
   return {
-    id: "group",
-    address: "group",
+    id: "1",
+    address: "contract",
     organizer: "organizer",
-    groupId: 1n,
+    groupId: 1,
     mint: "mint",
     name: "Test",
     quotaAmount: usdc(100),
@@ -49,8 +49,8 @@ function makeGroup(overrides: Partial<Group> = {}): Group {
     paidBitmap: 0n,
     wonBitmap: 0n,
     status: "open",
-    drawSource: "ledgerHash",
-    commitLedger: 0n,
+    drawSource: "drand",
+    drawRound: 0n,
     lastWinnerIndex: 0,
     prizes: Array<bigint>(64).fill(0n),
     wonRound: Array<number>(64).fill(0),

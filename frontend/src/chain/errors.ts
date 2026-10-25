@@ -1,9 +1,11 @@
 import type { BackendError } from "./api";
 
-// Error codes the UI can hit: the program's errors (programs/kotizi/src/errors.rs, subset), checks
-// the program gets from other programs or Anchor (identity record missing, token balance), and
-// failures of the transaction itself (wallet, network). Network fees and rent are sponsored (the
-// backend relay pays them), so "not enough SOL" only reaches the admin, who pays to create a group.
+// Error codes the UI can hit: the contract's errors a screen can reach (contract/kotizi/src/errors.rs,
+// a subset; the Stellar client maps the contract's names onto these: `NotKyc` → `KycRequired`,
+// `CotaNotFound` → `AccountNotFound`…), checks the contract gets from the token or the NFT (balance,
+// owner), and failures of the transaction itself (wallet, network). Network fees and rent are
+// sponsored (the backend relay pays them), so "not enough XLM" only reaches the admin, who pays to
+// create a group.
 const PROGRAM_MESSAGES = {
   Unauthorized: "Only the kotizi admin can create groups",
   InvalidQuota: "The installment must be greater than zero",
@@ -20,8 +22,12 @@ const PROGRAM_MESSAGES = {
   DrawNotExpired: "A draw is already pending and has not expired",
   NoDrawPending: "No draw is pending",
   DrawTooEarly: "The draw is not ready yet, try again in a moment",
-  SlotHashUnavailable: "This draw expired. Start it again",
-  RandomnessNotFulfilled: "The random number isn't ready yet, try again in a moment",
+  /** `settle_draw` got a beacon that isn't the drand signature of the draw's round. */
+  InvalidBeacon: "The draw's random number couldn't be verified. Try again in a moment",
+  /** The group's vault can't cover a prize; the contract never pays more than it holds. */
+  InsufficientVault: "This group can't release that credit right now",
+  /** `create_group` with a token the admin hasn't enabled. */
+  TokenNotSupported: "Groups can't be created in that currency",
   NotWinner: "This share hasn't been contemplated yet",
   AlreadyClaimed: "This share's credit was already released",
   NotAssetOwner: "This share belongs to another account",
@@ -72,8 +78,8 @@ export class KotiziError extends Error {
 // --- shared by the network clients -------------------------------------------------------------
 
 /**
- * A backend answer (Solana and EVM routes) as a KotiziError. `special` maps the network's own
- * codes first (contract or program errors, expired requests); it returns null for the rest.
+ * A backend answer as a KotiziError. `special` maps the client's own codes first (contract errors,
+ * expired authorizations); it returns null for the rest.
  */
 export function fromBackendError(
   e: BackendError,

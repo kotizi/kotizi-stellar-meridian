@@ -3,6 +3,7 @@ import { GROUP_CONTENT, type GroupSlug } from "@/content/groups";
 import { usdc } from "@/lib/format";
 
 import { bitmapOf, MAX_SHARES } from "../derive";
+import { groupIdOf, membershipIdOf, nftTokenId } from "../ids";
 import { groupMetadataJson, parseGroupMetadata } from "../metadata";
 import type { Address, Group, Membership } from "../types";
 import type { MockState } from "./client";
@@ -74,10 +75,25 @@ const GROUPS: SeedGroup[] = [
   },
 ];
 
-export function seedState({ now, randomAddress }: { now: number; randomAddress: () => Address }): MockState {
+/**
+ * The mock's starting state: the demo groups in one simulated contract, numbered from 0 like
+ * `create_group` does, each filled with simulated members ("bots").
+ */
+export function seedState({
+  now,
+  randomAddress,
+  randomContractAddress,
+}: {
+  now: number;
+  randomAddress: () => Address;
+  randomContractAddress: () => Address;
+}): MockState {
+  const contract = randomContractAddress();
   const organizer = randomAddress();
-  const mint = randomAddress();
+  // The demo token: one for every group (the app's amounts don't depend on a token's decimals).
+  const mint = randomContractAddress();
   const state: MockState = {
+    contract,
     groups: {},
     metadata: {},
     memberships: {},
@@ -87,14 +103,14 @@ export function seedState({ now, randomAddress }: { now: number; randomAddress: 
     bots: [],
   };
 
-  GROUPS.forEach((seed, i) => {
-    const address = randomAddress();
+  GROUPS.forEach((seed, groupId) => {
+    const id = groupIdOf(groupId);
     const completed = seed.round >= seed.maxMembers;
     const group: Group = {
-      id: address,
-      address,
+      id,
+      address: contract,
       organizer,
-      groupId: BigInt(i + 1),
+      groupId,
       mint,
       name: GROUP_CONTENT[seed.slug].name,
       quotaAmount: usdc(seed.quota),
@@ -108,8 +124,8 @@ export function seedState({ now, randomAddress }: { now: number; randomAddress: 
       paidBitmap: bitmapOf(seed.paid),
       wonBitmap: bitmapOf(seed.won),
       status: completed ? "completed" : "open",
-      drawSource: "ledgerHash",
-      commitLedger: 0n,
+      drawSource: "mock",
+      drawRound: 0n,
       lastWinnerIndex: seed.won.at(-1) ?? 0,
       // Past winners have claimed already: the ledger keeps their prize (every share paid then).
       prizes: Array.from({ length: MAX_SHARES }, (_, j) => (seed.won.includes(j) ? usdc(seed.quota) * BigInt(seed.joined) : 0n)),
@@ -117,26 +133,26 @@ export function seedState({ now, randomAddress }: { now: number; randomAddress: 
       unclaimedBitmap: 0n,
       unclaimedTotal: 0n,
     };
-    state.groups[address] = group;
+    state.groups[id] = group;
     // Same JSON the metadata route serves, read back through the same parser as the real client.
     const metadata = parseGroupMetadata(groupMetadataJson(GROUP_CONTENT[seed.slug], { image: "/brand/symbol-white.svg" }));
-    if (metadata) state.metadata[address] = metadata;
-    state.vaults[address] = group.quotaAmount * BigInt(seed.paid.length);
+    if (metadata) state.metadata[id] = metadata;
+    state.vaults[id] = group.quotaAmount * BigInt(seed.paid.length);
 
     for (let index = 0; index < seed.joined; index++) {
       const owner = randomAddress();
-      const membershipAddress = randomAddress();
+      const membershipId = membershipIdOf(groupId, index);
       const roundsPaid = seed.round + (seed.paid.includes(index) ? 1 : 0);
       const membership: Membership = {
-        id: membershipAddress,
-        address: membershipAddress,
-        group: address,
-        asset: randomAddress(),
+        id: membershipId,
+        address: contract,
+        group: id,
+        asset: String(nftTokenId(groupId, index)),
         index,
         totalPaid: group.quotaAmount * BigInt(roundsPaid),
         owner,
       };
-      state.memberships[membershipAddress] = membership;
+      state.memberships[membershipId] = membership;
       state.bots.push(owner);
     }
   });

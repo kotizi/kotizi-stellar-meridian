@@ -16,36 +16,55 @@ import {
   netPrize,
   type ChainDrawPhase,
 } from "../derive";
+import { DRAW_EXPIRY_SECS, roundAfter, roundTime } from "../drand";
 import { KotiziError, type TxFailureCode } from "../errors";
+import { groupIdOf, membershipIdOf, nftTokenId } from "../ids";
 import { groupMetadataJson, parseGroupMetadata } from "../metadata";
-import type { Address, CreateGroupInput, DrawIdleReason, DrawStep, Group, GroupMetadata, KycRecord, Membership, TxResult } from "../types";
+import type {
+  Address,
+  CreateGroupInput,
+  DrawIdleReason,
+  DrawStep,
+  Group,
+  GroupId,
+  GroupMetadata,
+  KycRecord,
+  Membership,
+  MembershipId,
+  TxResult,
+} from "../types";
 import { seedState } from "./seed";
 
 /**
  * In-memory stand-in for the Kotizi contract, persisted to localStorage. Each action applies the
- * same checks, in the same order, as the matching instruction handler, and throws the same error
- * codes. Simulated members ("bots") pay every round and claim their prizes so groups keep moving.
- * `drawNow` picks the next draw step the way the backend keeper does (ledger-hash source only).
+ * same checks, in the same order, as the matching contract function, and throws the same error
+ * codes. Groups are numbered from 0 inside one simulated contract, and shares by group and index,
+ * like on chain. Simulated members ("bots") pay every round and claim their prizes so groups keep
+ * moving. `drawNow` picks the next draw step the way the backend keeper does, on drand's clock
+ * (`drand.ts`), but the winner is a local random pick: no beacon is fetched or verified.
  */
 
-// v5: Stellar-shaped addresses, no per-group network (v4: app ids; v3: per-share prize ledger).
-const STORAGE_KEY = "kotizi:mock:v5";
-const SLOT_MS = 400;
-const SLOT_HASH_DELAY = 3n;
-const SLOT_HASH_EXPIRY_SLOTS = 400n;
+// v6: contract-shaped ids, drand rounds (v5: Stellar-shaped addresses; v4: app ids; v3: per-share prize ledger).
+const STORAGE_KEY = "kotizi:mock:v6";
+/**
+ * Rounds a mock draw waits for. The contract waits 10 (`DRAW_ROUND_DELAY`, 30 s); the mock waits 1
+ * (at most 3 s) so "Draw now" resolves while the screen is open in demos and e2e tests.
+ */
+const MOCK_DRAW_ROUND_DELAY = 1;
 
 export interface MockState {
-  groups: Record<Address, Group>;
-  metadata: Record<Address, GroupMetadata>;
-  memberships: Record<Address, Membership>;
+  /** The simulated Kotizi contract every group lives in. */
+  contract: Address;
+  groups: Record<GroupId, Group>;
+  metadata: Record<GroupId, GroupMetadata>;
+  memberships: Record<MembershipId, Membership>;
   kyc: Record<Address, KycRecord>;
   balances: Record<Address, bigint>;
-  vaults: Record<Address, bigint>;
+  vaults: Record<GroupId, bigint>;
   bots: Address[];
 }
 
 const nowSecs = () => Math.floor(Date.now() / 1000);
-const currentSlot = () => BigInt(Math.floor(Date.now() / SLOT_MS));
 
 function randomBytes(n: number) {
   const bytes = new Uint8Array(n);
@@ -54,9 +73,11 @@ function randomBytes(n: number) {
 }
 
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const randomStrKey = (prefix: "G" | "C") => prefix + Array.from(randomBytes(55), (b) => BASE32[b % 32]).join("");
 /** A Stellar-looking account address (G + 55 base32 characters); the mock never checks the checksum. */
-export const randomAddress = (): Address =>
-  "G" + Array.from(randomBytes(55), (b) => BASE32[b % 32]).join("");
+export const randomAddress = (): Address => randomStrKey("G");
+/** A Stellar-looking contract address (C + 55 base32 characters). */
+export const randomContractAddress = (): Address => randomStrKey("C");
 const randomSignature = () => Array.from(randomBytes(32), (b) => b.toString(16).padStart(2, "0")).join("");
 
 function randomIndex(n: number) {
@@ -81,7 +102,7 @@ function load(): MockState {
   } catch {
     // storage blocked or corrupt: start fresh
   }
-  return seedState({ now: nowSecs(), randomAddress });
+  return seedState({ now: nowSecs(), randomAddress, randomContractAddress });
 }
 
 const IDLE_REASONS: Record<Exclude<ChainDrawPhase, "due" | "pending">, DrawIdleReason> = {
@@ -90,12 +111,15 @@ const IDLE_REASONS: Record<Exclude<ChainDrawPhase, "due" | "pending">, DrawIdleR
   completed: "completed",
 };
 
-/** The next draw step for a group, or why there is none, as the backend keeper decides it (slot-hash source). */
-function nextDrawStep(g: Group, slot: bigint, now: number): { step: "request" | "settle" } | { reason: DrawIdleReason } {
+/** When the pending draw's round is published (unix seconds). */
+const drawRoundTime = (g: Group) => roundTime(Number(g.drawRound));
+
+/** The next draw step for a group, or why there is none, as the backend keeper decides it. */
+function nextDrawStep(g: Group, now: number): { step: "request" | "settle" } | { reason: DrawIdleReason } {
   const phase = chainDrawPhase(g, now);
   if (phase === "pending") {
-    if (slot > g.commitLedger + SLOT_HASH_EXPIRY_SLOTS) return { step: "request" };
-    return slot > g.commitLedger ? { step: "settle" } : { reason: "waitingForRandomness" };
+    if (now > drawRoundTime(g) + DRAW_EXPIRY_SECS) return { step: "request" };
+    return now >= drawRoundTime(g) ? { step: "settle" } : { reason: "waitingForRandomness" };
   }
   return phase === "due" ? { step: "request" } : { reason: IDLE_REASONS[phase] };
 }
@@ -133,6 +157,11 @@ export class MockKotiziClient implements KotiziClient {
 
   /** Runs a state change like a transaction: latency, then all-or-nothing. */
   private async tx(apply: (s: MockState) => void): Promise<TxResult> {
+    return (await this.txReturning(apply)).result;
+  }
+
+  /** `tx` for a change that answers a value, like a contract function's return (a new id). */
+  private async txReturning<T>(apply: (s: MockState) => T): Promise<{ result: TxResult; value: T }> {
     await sleep(this.options.latencyMs ?? 500 + randomIndex(500));
     this.assertOnline();
     const failure = this.nextFailure;
@@ -141,24 +170,24 @@ export class MockKotiziClient implements KotiziClient {
       throw new KotiziError(failure);
     }
     const draft = structuredClone(this.s);
-    apply(draft);
+    const value = apply(draft);
     this.state = draft;
     this.save();
-    return { signature: randomSignature() };
+    return { result: { signature: randomSignature() }, value };
   }
 
   private assertOnline() {
     if (this.offline) throw new KotiziError("NetworkError");
   }
 
-  private group(s: MockState, address: Address) {
-    const g = s.groups[address];
+  private group(s: MockState, id: GroupId) {
+    const g = s.groups[id];
     if (!g) throw new KotiziError("AccountNotFound");
     return g;
   }
 
-  private membership(s: MockState, address: Address) {
-    const m = s.memberships[address];
+  private membership(s: MockState, id: MembershipId) {
+    const m = s.memberships[id];
     if (!m) throw new KotiziError("AccountNotFound");
     return m;
   }
@@ -176,17 +205,17 @@ export class MockKotiziClient implements KotiziClient {
     return Object.values(structuredClone(this.s.groups));
   }
 
-  async getGroup(address: Address) {
+  async getGroup(id: GroupId) {
     this.assertOnline();
-    return structuredClone(this.s.groups[address] ?? null);
+    return structuredClone(this.s.groups[id] ?? null);
   }
 
   async getGroupMetadata(group: Group) {
     this.assertOnline();
-    return structuredClone(this.s.metadata[group.address] ?? null);
+    return structuredClone(this.s.metadata[group.id] ?? null);
   }
 
-  async listGroupMemberships(group: Address) {
+  async listGroupMemberships(group: GroupId) {
     this.assertOnline();
     return Object.values(this.s.memberships)
       .filter((m) => m.group === group)
@@ -214,22 +243,31 @@ export class MockKotiziClient implements KotiziClient {
 
   // --- instructions ------------------------------------------------------------------------
 
-  async joinGroup({ owner, group, payFirstQuota }: { owner: Address; group: Address; payFirstQuota?: boolean }) {
-    const address = randomAddress();
-    const result = await this.tx((s) => {
+  async joinGroup({ owner, group, payFirstQuota }: { owner: Address; group: GroupId; payFirstQuota?: boolean }) {
+    const { result, value: membership } = await this.txReturning((s) => {
       if (!s.kyc[owner]) throw new KotiziError("KycRequired");
       const g = this.group(s, group);
       const index = g.membersJoined;
       if (index >= g.maxMembers) throw new KotiziError("GroupFull");
-      const m: Membership = { id: address, address, group, asset: randomAddress(), index, totalPaid: 0n, owner };
-      s.memberships[address] = m;
+      const id = membershipIdOf(g.groupId, index);
+      const m: Membership = {
+        id,
+        address: s.contract,
+        group,
+        asset: String(nftTokenId(g.groupId, index)),
+        index,
+        totalPaid: 0n,
+        owner,
+      };
+      s.memberships[id] = m;
       g.membersJoined = index + 1;
       if (payFirstQuota) this.pay(s, g, m);
+      return id;
     });
-    return { ...result, membership: address };
+    return { ...result, membership };
   }
 
-  payQuota({ owner, membership }: { owner: Address; membership: Address }) {
+  payQuota({ owner, membership }: { owner: Address; membership: MembershipId }) {
     return this.tx((s) => {
       const m = this.membership(s, membership);
       if (m.owner !== owner) throw new KotiziError("NotAssetOwner");
@@ -237,10 +275,10 @@ export class MockKotiziClient implements KotiziClient {
     });
   }
 
-  async drawNow({ group }: { group: Address }): Promise<DrawStep> {
+  async drawNow({ group }: { group: GroupId }): Promise<DrawStep> {
     this.assertOnline();
     const g = this.group(this.s, group);
-    const next = nextDrawStep(g, currentSlot(), nowSecs());
+    const next = nextDrawStep(g, nowSecs());
     if ("reason" in next) {
       await sleep(this.options.latencyMs ?? 300);
       return { action: null, reason: next.reason };
@@ -250,7 +288,7 @@ export class MockKotiziClient implements KotiziClient {
     return { action: step, ...result };
   }
 
-  claimPrize({ owner, membership }: { owner: Address; membership: Address }) {
+  claimPrize({ owner, membership }: { owner: Address; membership: MembershipId }) {
     return this.tx((s) => {
       const m = this.membership(s, membership);
       const g = this.group(s, m.group);
@@ -262,23 +300,21 @@ export class MockKotiziClient implements KotiziClient {
 
   // --- draw steps (request_draw / settle_draw) ---------------------------------------------
 
-  private requestDraw(s: MockState, group: Address) {
+  private requestDraw(s: MockState, group: GroupId) {
     const g = this.group(s, group);
-    if (nowSecs() < g.nextDrawTs) throw new KotiziError("DrawNotDue");
-    const slot = currentSlot();
-    if (g.status === "drawPending" && slot <= g.commitLedger + SLOT_HASH_EXPIRY_SLOTS)
-      throw new KotiziError("DrawNotExpired");
+    const now = nowSecs();
+    if (now < g.nextDrawTs) throw new KotiziError("DrawNotDue");
     if (g.status === "completed") throw new KotiziError("GroupNotOpen");
+    if (g.status === "drawPending" && now <= drawRoundTime(g) + DRAW_EXPIRY_SECS) throw new KotiziError("DrawNotExpired");
     if (eligibleBitmap(g) === 0n) throw new KotiziError("NoEligibleMembers");
-    g.commitLedger = slot + SLOT_HASH_DELAY;
-    g.drawSource = "ledgerHash";
     g.status = "drawPending";
+    g.drawRound = BigInt(roundAfter(now, MOCK_DRAW_ROUND_DELAY));
   }
 
-  private settleDraw(s: MockState, group: Address) {
+  private settleDraw(s: MockState, group: GroupId) {
     const g = this.group(s, group);
     if (g.status !== "drawPending") throw new KotiziError("NoDrawPending");
-    if (currentSlot() <= g.commitLedger) throw new KotiziError("DrawTooEarly");
+    if (nowSecs() < drawRoundTime(g)) throw new KotiziError("DrawTooEarly");
 
     const eligible: number[] = [];
     for (let i = 0; i < g.maxMembers; i++) if (eligibleBitmap(g) & bit(i)) eligible.push(i);
@@ -296,6 +332,7 @@ export class MockKotiziClient implements KotiziClient {
     g.round += 1;
     g.nextDrawTs = nowSecs() + g.periodSecs;
     g.status = g.round >= g.maxMembers ? "completed" : "open";
+    g.drawRound = 0n;
 
     this.runBots(s, g);
   }
@@ -306,9 +343,9 @@ export class MockKotiziClient implements KotiziClient {
     if (g.status !== "open") throw new KotiziError("GroupNotOpen");
     if (hasPaid(g, m.index)) throw new KotiziError("AlreadyPaid");
     this.transfer(s, m.owner, g.quotaAmount);
-    s.vaults[g.address] = (s.vaults[g.address] ?? 0n) + g.quotaAmount;
+    s.vaults[g.id] = (s.vaults[g.id] ?? 0n) + g.quotaAmount;
     g.paidBitmap |= bit(m.index);
-    m.totalPaid = (m.totalPaid ?? 0n) + g.quotaAmount; // the mock, like Solana, keeps the total
+    m.totalPaid = (m.totalPaid ?? 0n) + g.quotaAmount; // like the contract's `Paid(group, index)`
   }
 
   private claim(s: MockState, g: Group, m: Membership) {
@@ -316,14 +353,14 @@ export class MockKotiziClient implements KotiziClient {
     const pool = g.prizes[m.index];
     g.unclaimedBitmap &= ~bit(m.index);
     g.unclaimedTotal -= pool;
-    s.vaults[g.address] = (s.vaults[g.address] ?? 0n) - pool;
+    s.vaults[g.id] = (s.vaults[g.id] ?? 0n) - pool;
     credit(s, m.owner, netPrize(pool, g.adminFeeBps));
     credit(s, g.organizer, adminFee(pool, g.adminFeeBps));
   }
 
   /** Bots claim a prize they won and pay the new round's quota. */
   private runBots(s: MockState, g: Group) {
-    const members = Object.values(s.memberships).filter((m) => m.group === g.address);
+    const members = Object.values(s.memberships).filter((m) => m.group === g.id);
     const isBot = (m: Membership) => s.bots.includes(m.owner);
     for (const m of members) if (isBot(m) && isUnclaimed(g, m.index)) this.claim(s, g, m);
     if (g.status !== "open") return;
@@ -345,16 +382,18 @@ export class MockKotiziClient implements KotiziClient {
   }
 
   async createGroup(input: CreateGroupInput) {
-    const address = randomAddress();
-    const result = await this.tx((s) => {
+    const { result, value: group } = await this.txReturning((s) => {
       assertCreateGroupInput(input);
       const any = Object.values(s.groups)[0];
-      s.groups[address] = {
-        id: address,
-        address,
+      // Numbered in order from 0, like `create_group` (the contract's `GroupCount`).
+      const groupId = Object.keys(s.groups).length;
+      const id = groupIdOf(groupId);
+      s.groups[id] = {
+        id,
+        address: s.contract,
         organizer: input.organizer,
-        groupId: BigInt(Date.now()),
-        mint: any?.mint ?? randomAddress(),
+        groupId,
+        mint: any?.mint ?? randomContractAddress(),
         name: input.name,
         quotaAmount: input.quotaAmount,
         maxMembers: input.maxMembers,
@@ -367,25 +406,26 @@ export class MockKotiziClient implements KotiziClient {
         paidBitmap: 0n,
         wonBitmap: 0n,
         status: "open",
-        drawSource: "ledgerHash",
-        commitLedger: 0n,
+        drawSource: "mock",
+        drawRound: 0n,
         lastWinnerIndex: 0,
         prizes: Array.from({ length: MAX_SHARES }, () => 0n),
         wonRound: Array.from({ length: MAX_SHARES }, () => 0),
         unclaimedBitmap: 0n,
         unclaimedTotal: 0n,
       };
-      s.vaults[address] = 0n;
+      s.vaults[id] = 0n;
       // The metadata route serves `/metadata/<slug>.json[?value=<usd>]`; read the same content back.
       const [, slug, query] = /\/metadata\/([\w-]+)\.json(?:\?(.*))?$/.exec(input.uri) ?? [];
       if (slug && isGroupSlug(slug)) {
         const value = Number(new URLSearchParams(query).get("value"));
         const content = Number.isFinite(value) && value > 0 ? { ...GROUP_CONTENT[slug], propertyValueUsd: value } : GROUP_CONTENT[slug];
         const metadata = parseGroupMetadata(groupMetadataJson(content, { image: "/brand/symbol-white.svg" }));
-        if (metadata) s.metadata[address] = metadata;
+        if (metadata) s.metadata[id] = metadata;
       }
+      return id;
     });
-    return { ...result, group: address };
+    return { ...result, group };
   }
 
   verifyIdentity(wallet: Address) {

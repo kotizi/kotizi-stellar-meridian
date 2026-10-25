@@ -1,27 +1,32 @@
-// Mirrors the contract's storage entries (the Soroban contract in this repo, once it exists).
-// Token amounts are in USDC base units (6 decimals) and kept as bigint.
+// Mirrors the Kotizi contract's storage (`contract/kotizi/src/types.rs`).
+//
+// Amounts are the app's unit, kept as bigint: USD with 6 decimals (1 USD = 1_000_000), whatever
+// the group's token. Each group's token has its own decimals on chain (6 or 7 today); the chain
+// client converts at its boundary, so screens, rules and the mock never see a token's decimals.
 
 export type Address = string;
 
-/** The app's id of a group: what routes, links and caches use. The group's id in the contract. */
+/** The app's id of a group: what routes, links and caches use (`ids.ts`: the contract's group number). */
 export type GroupId = string;
-/** The app's id of a share (membership), like `GroupId`. */
+/** The app's id of a share (membership): its group and index (`ids.ts`). */
 export type MembershipId = string;
 
 export type GroupStatus = "open" | "drawPending" | "completed";
 
 /**
- * Where the draw's randomness comes from: the hash of a ledger committed to in advance
- * (commit-reveal). TODO(vrf): a real VRF would add a source here.
+ * Where the draw's randomness comes from: a drand quicknet beacon the contract verifies itself
+ * (`drand.ts`), or the mock's own random pick.
  */
-export type DrawSource = "ledgerHash";
+export type DrawSource = "drand" | "mock";
 
 export interface Group {
   id: GroupId;
   /** The contract behind the group, shown in the on-chain details. */
   address: Address;
   organizer: Address;
-  groupId: bigint;
+  /** The group's number in the contract (`group_id`, from 0). */
+  groupId: number;
+  /** The token the group collects and pays prizes in. */
   mint: Address;
   name: string;
   quotaAmount: bigint;
@@ -36,8 +41,8 @@ export interface Group {
   wonBitmap: bigint;
   status: GroupStatus;
   drawSource: DrawSource;
-  /** Ledger sequence the pending draw committed to. */
-  commitLedger: bigint;
+  /** The drand round that decides the pending draw; 0 when none is pending. */
+  drawRound: bigint;
   /** Winner of the most recent draw (informational). */
   lastWinnerIndex: number;
   /**
@@ -62,10 +67,11 @@ export interface GroupMetadata {
 
 export interface Membership {
   id: MembershipId;
-  /** Where the share lives on chain (its membership entry). */
+  /** The contract that holds the share (it mints the membership NFT itself). */
   address: Address;
   group: GroupId;
-  asset: Address;
+  /** The membership NFT's token id in that contract (`ids.ts`, `nftTokenId`). */
+  asset: string;
   index: number;
   /** Everything this share has paid. Null if the contract doesn't keep it, so the app doesn't number the installments. */
   totalPaid: bigint | null;
@@ -82,7 +88,7 @@ export interface TxResult {
   signature: string;
 }
 
-/** `create_group` arguments (admin only). Amounts in USDC base units; `uri` points at the group's metadata JSON. */
+/** `create_group` arguments (admin only). Amounts in the app's unit (USD, 6 decimals); `uri` points at the group's metadata JSON. */
 export interface CreateGroupInput {
   organizer: Address;
   name: string;
