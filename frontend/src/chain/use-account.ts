@@ -16,9 +16,12 @@ export function useKyc(address: Address | null) {
   });
 }
 
-/** The signed-in account's address and identity status (undefined while unknown). */
+/**
+ * The signed-in account's address and identity status (undefined while unknown). The operator's
+ * wallet account (`walletOnly`) has no identity record to read: it stays unknown.
+ */
 export function useWalletState() {
-  const { address } = useSession();
-  const kyc = useKyc(address);
+  const { address, walletOnly } = useSession();
+  const kyc = useKyc(walletOnly ? null : address);
   return { address, kycApproved: kyc.data ? true : kyc.data === null ? false : undefined };
 }

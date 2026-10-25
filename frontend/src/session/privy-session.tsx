@@ -1,29 +1,38 @@
 "use client";
 
 import { PrivyProvider, useLogin, usePrivy } from "@privy-io/react-auth";
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCreateWallet, useSignRawHash } from "@privy-io/react-auth/extended-chains";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 
+import { showActionStatus } from "@/chain/action-status";
+import { failureStatus } from "@/chain/hooks";
 import { env } from "@/config/env";
+import { sleep } from "@/lib/sleep";
 
 import { SessionContext, type Session, type SessionSigner } from "./context";
+import { useFreighterWallet } from "./freighter-wallet";
 import { clearIdentityCheck, completeIdentityCheck, markLogin, useIdentityCheck } from "./identity-check";
+import { needsStellarWallet, signatureBytes, stellarAddressOf, toHex, type PrivyUserLike } from "./stellar-wallet";
+import { setWalletSession, useWalletSession } from "./wallet-session";
 
-// Walletless onboarding: email login gives the account a Stellar embedded wallet.
-//
-// TODO(stellar), task 6 — the parts that were Solana/EVM-specific here and are NOT ported yet:
-//  - Stellar is a Privy Tier 2 chain: no `useWallets`/`useSignTransaction` helper and no
-//    `embeddedWallets.<chain>.createOnLogin` config key is assumed. Creating the embedded wallet
-//    (REST/`createWallet` with chain_type "stellar") and the raw-sign flow (hash in, signature out)
-//    must be confirmed against a real Privy app before this file is finished.
-//  - `signer` below is therefore always null, and `chainType === "stellar"` on linked accounts is the
-//    same unverified assumption as in backend/src/auth/privy.ts.
+/** Tries at creating a missing Stellar wallet before leaving it to the next visit. */
+const CREATE_WALLET_ATTEMPTS = 3;
+const CREATE_WALLET_RETRY_MS = 2_000;
+
+// Walletless onboarding: email login, then the app gives the account a Stellar embedded wallet.
+// Stellar is a Privy "extended chain" (raw-hash signing, no `createOnLogin`), so the wallet is
+// created here once Privy's login flow is over, and signs the 32-byte payloads the backend's relay
+// asks for. Privy has no external Stellar wallets, so the wallet sign-in ("Already have a crypto
+// wallet?") is Freighter's own, outside Privy: the operator's account (`Session.walletOnly`), which
+// also signs group creation.
 export function PrivySession({ children }: { children: ReactNode }) {
   return (
     <PrivyProvider
       appId={env.privyAppId}
       clientId={env.privyClientId}
       config={{
-        loginMethods: ["email", "wallet"],
+        // Privy's own modal: email only (the wallet sign-in is Freighter's, above).
+        loginMethods: ["email"],
         appearance: {
           theme: "#171717", // graphite, the brand's dark background (Privy's "dark" is navy)
           accentColor: "#0000FF",
@@ -41,27 +50,55 @@ export function PrivySession({ children }: { children: ReactNode }) {
 function PrivySessionBridge({ children }: { children: ReactNode }) {
   const { ready, authenticated, user, logout, getAccessToken } = usePrivy();
   const identityCheck = useIdentityCheck();
+  const ensureStellarWallet = useEnsureStellarWallet();
   // Also fires when an existing session is restored (`wasAlreadyAuthenticated`): only a real login
-  // starts identity verification.
+  // starts identity verification. It runs once Privy's modal is done, so the wallet is created here
+  // and never while that modal is still creating the account.
   const { login } = useLogin({
     onComplete: ({ user, isNewUser, wasAlreadyAuthenticated }) => {
       if (!wasAlreadyAuthenticated) markLogin({ accountId: user.id, isNewAccount: isNewUser });
+      ensureStellarWallet(user.id, user);
     },
   });
 
-  // The account's address comes from the wallets linked to it. Prefer the embedded wallet.
-  const address = useMemo(() => {
-    if (!authenticated) return null;
-    const stellar = (user?.linkedAccounts ?? []).flatMap((a) =>
-      a.type === "wallet" && (a.chainType as string) === "stellar"
-        ? [{ address: a.address, embedded: a.walletClientType === "privy" }]
-        : [],
-    );
-    return (stellar.find((w) => w.embedded) ?? stellar[0])?.address ?? null;
-  }, [authenticated, user]);
+  // The account's address comes from the Stellar wallets linked to it (the embedded one first).
+  const address = authenticated && user ? stellarAddressOf(user) : null;
   const email = user?.email?.address ?? null;
 
-  const signer = useMemo<SessionSigner | null>(() => null, []);
+  // The embedded wallet signs without a prompt: our screens are the confirmation. `signRawHash`
+  // changes identity across renders, so the signer reads it through a ref and stays stable per
+  // address (the chain client is rebuilt whenever the signer changes).
+  const { signRawHash } = useSignRawHash();
+  const signRawHashRef = useRef(signRawHash);
+  useEffect(() => {
+    signRawHashRef.current = signRawHash;
+  }, [signRawHash]);
+  const signer = useMemo<SessionSigner | null>(
+    () =>
+      address
+        ? {
+            address,
+            signHash: async (hash) => {
+              const { signature } = await signRawHashRef.current({ address, chainType: "stellar", hash: toHex(hash) });
+              return signatureBytes(signature);
+            },
+          }
+        : null,
+    [address],
+  );
+
+  // The operator's Freighter: group creation, and the wallet sign-in.
+  const adminWallet = useFreighterWallet();
+
+  // Signed in with Freighter (the operator, no Privy account): it counts while Freighter still
+  // shares that address with the site, which takes a moment to read after a reload.
+  const walletSession = useWalletSession();
+  const walletChecking = walletSession != null && adminWallet.available === undefined;
+  const walletOnly = !authenticated && walletSession != null && adminWallet.address === walletSession;
+  useEffect(() => {
+    // Freighter no longer shares it (removed, another account, the site disallowed): forget it.
+    if (walletSession && adminWallet.available !== undefined && adminWallet.address !== walletSession) setWalletSession(null);
+  }, [walletSession, adminWallet.available, adminWallet.address]);
 
   // Stable while signed in: the chain client is rebuilt whenever this changes.
   const accessToken = useCallback(
@@ -70,24 +107,75 @@ function PrivySessionBridge({ children }: { children: ReactNode }) {
   );
 
   const session = useMemo<Session>(() => {
+    const signInWithWallet = async () => {
+      if (adminWallet.available === false) {
+        showActionStatus({
+          phase: "failed",
+          tone: "warning",
+          title: "Freighter not found",
+          description: "Install the Freighter extension (freighter.app) with your account, then try again.",
+        });
+        return;
+      }
+      try {
+        setWalletSession(await adminWallet.connect());
+      } catch (error) {
+        showActionStatus(failureStatus(error, "Couldn't connect Freighter"));
+      }
+    };
     return {
       mode: "privy",
-      status: !ready ? "loading" : authenticated ? "signedIn" : "signedOut",
-      address,
-      label: email,
-      signer,
+      status: !ready || walletSession === undefined || walletChecking ? "loading" : authenticated || walletOnly ? "signedIn" : "signedOut",
+      address: walletOnly ? walletSession : address,
+      label: walletOnly ? null : email,
+      loginMethods: ["email", "wallet"],
+      walletOnly,
+      signer: walletOnly ? null : signer,
+      adminWallet,
       getAccessToken: accessToken,
-      isNewAccount: identityCheck.isNewAccount,
+      isNewAccount: walletOnly ? null : identityCheck.isNewAccount,
       newAccountPending: authenticated && identityCheck.pending,
-      identityVerified: authenticated && identityCheck.verified,
+      // The operator's account doesn't go through identity verification.
+      identityVerified: walletOnly || (authenticated && identityCheck.verified),
       completeIdentityCheck,
-      login: (method) => login(method ? { loginMethods: [method] } : undefined),
+      login: (method) => (method === "wallet" ? void signInWithWallet() : login({ loginMethods: ["email"] })),
       logout: async () => {
+        setWalletSession(null);
         clearIdentityCheck();
-        await logout();
+        if (authenticated) await logout();
       },
     };
-  }, [ready, authenticated, address, email, signer, accessToken, identityCheck, login, logout]);
+  }, [ready, authenticated, address, email, signer, adminWallet, walletSession, walletChecking, walletOnly, accessToken, identityCheck, login, logout]);
 
   return <SessionContext value={session}>{children}</SessionContext>;
+}
+
+/**
+ * Gives an account without a Stellar wallet its embedded one (`needsStellarWallet`): every new
+ * account, since Stellar has no `createOnLogin`, and any older one whose creation was cut short.
+ * Call it only after Privy's login flow: creating a wallet while its modal is still open takes the
+ * modal over. Once per account and tab; a failure is retried a couple of times, since without a
+ * wallet the account can't act, and otherwise left to the next visit.
+ */
+function useEnsureStellarWallet() {
+  const { createWallet } = useCreateWallet();
+  const createRef = useRef(createWallet);
+  useEffect(() => {
+    createRef.current = createWallet;
+  }, [createWallet]);
+  const attempted = useRef<string | null>(null);
+  return useCallback((accountId: string, user: PrivyUserLike) => {
+    if (attempted.current === accountId || !needsStellarWallet(user)) return;
+    attempted.current = accountId;
+    void (async () => {
+      for (let attempt = 1; attempt <= CREATE_WALLET_ATTEMPTS; attempt++) {
+        try {
+          await createRef.current({ chainType: "stellar" });
+          return;
+        } catch {
+          if (attempt < CREATE_WALLET_ATTEMPTS) await sleep(CREATE_WALLET_RETRY_MS);
+        }
+      }
+    })();
+  }, []);
 }

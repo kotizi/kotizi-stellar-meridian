@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 
 import { ChainProvider } from "@/chain/provider";
-import { Toaster } from "@/components/ui/sonner";
+import { ActionStatusDialog } from "@/components/shell/action-status-dialog";
 import { SessionProvider } from "@/session/provider";
 
 export function AppProviders({ children }: { children: ReactNode }) {
@@ -11,9 +11,9 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <SessionProvider>
       <ChainProvider>
         {children}
+        {/* Every action's progress, outcome and failure, in one dialog (`chain/action-status.ts`). */}
+        <ActionStatusDialog />
       </ChainProvider>
-      {/* Clear of screen titles; below lg, above the tab bar (84 px) with a gap (see globals.css). */}
-      <Toaster position="bottom-right" mobileOffset={{ bottom: 100 }} />
     </SessionProvider>
   );
 }

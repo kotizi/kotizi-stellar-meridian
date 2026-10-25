@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
-import { toast } from "sonner";
 
 import { sameValue } from "@/lib/same-value";
 
+import { showActionStatus, type ActionStatus } from "./action-status";
 import { KotiziError } from "./errors";
 import type { KotiziClient } from "./index";
 import { useKotiziClient } from "./provider";
@@ -167,7 +167,14 @@ export function errorMessage(error: unknown) {
   return "Something went wrong";
 }
 
-/** Runs a transaction with pending/success/error toasts, then refreshes every query. */
+/** How an action ended, as the status dialog says it: a title, maybe a line, and its tone. */
+export type ActionOutcome = string | { title: string; description?: string; tone?: "success" | "info" };
+
+/**
+ * Runs a transaction and shows it in the app's status dialog (`ActionStatusDialog`): the pending
+ * label while it runs, then its outcome, or why it failed. Then refreshes every query.
+ * `feedback: "errors"` opens the dialog only on a failure, for screens that show their own progress.
+ */
 export function useChainAction() {
   const client = useKotiziClient();
   const [pending, setPending] = useState<string | null>(null);
@@ -176,19 +183,27 @@ export function useChainAction() {
     async <R>(
       key: string,
       action: (client: KotiziClient) => Promise<R>,
-      labels: { pending: string; success: string | ((result: R) => string) },
+      labels: {
+        pending: string;
+        success: ActionOutcome | ((result: R) => ActionOutcome);
+        /** The dialog's title when it fails; the error's own message goes under it. */
+        failure?: string;
+      },
+      { feedback = "all" }: { feedback?: "all" | "errors" } = {},
     ) => {
       setPending(key);
-      const id = toast.loading(labels.pending);
+      if (feedback === "all") showActionStatus({ phase: "pending", title: labels.pending });
       try {
         const result = await action(client);
-        toast.success(typeof labels.success === "function" ? labels.success(result) : labels.success, { id });
+        if (feedback === "all") {
+          const outcome = typeof labels.success === "function" ? labels.success(result) : labels.success;
+          const { title, description, tone = "success" } = typeof outcome === "string" ? { title: outcome } : outcome;
+          showActionStatus({ phase: "done", tone, title, description });
+        }
         return result;
       } catch (error) {
         console.warn(`[kotizi] ${key} failed`, error);
-        // Cancelling in the wallet is the user's choice, not a failure.
-        if (error instanceof KotiziError && error.code === "UserRejected") toast(errorMessage(error), { id });
-        else toast.error(errorMessage(error), { id });
+        showActionStatus(failureStatus(error, labels.failure));
         return null;
       } finally {
         setPending(null);
@@ -199,6 +214,14 @@ export function useChainAction() {
   );
 
   return { run, pending };
+}
+
+/** A failed action in the status dialog. Cancelling a confirmation is the user's choice, not a failure. */
+export function failureStatus(error: unknown, title = "Not completed"): Extract<ActionStatus, { phase: "failed" }> {
+  if (error instanceof KotiziError && error.code === "UserRejected") {
+    return { phase: "failed", tone: "neutral", title: errorMessage(error), description: "Nothing was sent." };
+  }
+  return { phase: "failed", tone: "error", title, description: errorMessage(error) };
 }
 
 // One 1 s timer shared by every `useNow` reader, running only while there is one.

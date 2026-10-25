@@ -75,7 +75,8 @@ export function JoinView({ id }: { id: string }) {
     const share = formatShare(group.membersJoined);
     const result = await run("join", (c) => c.joinGroup({ owner, group: group.id, payFirstQuota: payNow }), {
       pending: "Joining the group…",
-      success: `You took share ${share}`,
+      success: { title: "You're in the group", description: `You took share ${share}.` },
+      failure: "Couldn't join the group",
     });
     if (result) {
       selectShare(result.membership); // home opens on the new share

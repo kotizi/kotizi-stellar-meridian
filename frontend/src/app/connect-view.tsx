@@ -24,9 +24,10 @@ export function ConnectView() {
     if (signingOut) {
       if (session.status === "signedOut") endSignOut();
     } else if (session.status === "signedIn") {
-      router.replace(session.newAccountPending ? "/verify" : "/home");
+      // The operator's wallet account has no member screens: it starts at the groups.
+      router.replace(session.walletOnly ? "/groups" : session.newAccountPending ? "/verify" : "/home");
     }
-  }, [signingOut, session.status, session.newAccountPending, router]);
+  }, [signingOut, session.status, session.newAccountPending, session.walletOnly, router]);
 
   return (
     <main className="relative isolate flex min-h-svh flex-1 flex-col overflow-hidden">
@@ -58,15 +59,17 @@ export function ConnectView() {
               ? "Login via Privy · your account is ready instantly"
               : "Mock login · set NEXT_PUBLIC_PRIVY_APP_ID for Privy"}
           </p>
-          {/* Email is the path we recommend (no prompts, no network switches); a wallet stays possible, but quiet. */}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => session.login("wallet")}
-            className="focus-ring self-center rounded-sm type-body-sm text-tertiary underline-offset-4 transition-colors hover:text-secondary hover:underline disabled:pointer-events-none disabled:text-disabled"
-          >
-            Already have a crypto wallet? Use it instead
-          </button>
+          {/* Email is the path we recommend (no prompts); a wallet, when the session offers it, stays quiet. */}
+          {session.loginMethods.includes("wallet") && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => session.login("wallet")}
+              className="focus-ring self-center rounded-sm type-body-sm text-tertiary underline-offset-4 transition-colors hover:text-secondary hover:underline disabled:pointer-events-none disabled:text-disabled"
+            >
+              Already have a crypto wallet? Use it instead
+            </button>
+          )}
         </GlassSheet>
       </div>
     </main>

@@ -15,7 +15,6 @@ import { textLinkVariants } from "@/components/kz/text-link";
 import { AppIcon } from "@/components/kz/vidro-k";
 import { useIdentityCheckRequired } from "@/components/shell/identity-gate";
 import { useSignOut } from "@/components/shell/use-sign-out";
-import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -73,10 +72,13 @@ export function VerifyView() {
     const found = validateIdentity(details, new Date());
     setErrors(found);
     if (Object.keys(found).length > 0) return;
-    const result = await run("kyc", (c) => c.verifyIdentity(address), {
-      pending: "Verifying identity…",
-      success: "Identity verified",
-    });
+    // This screen shows its own progress and result; the status dialog only opens on a failure.
+    const result = await run(
+      "kyc",
+      (c) => c.verifyIdentity(address),
+      { pending: "Verifying identity…", success: "Identity verified", failure: "Verification not completed" },
+      { feedback: "errors" },
+    );
     if (!result) return;
     setFinishing(true);
     await waitForIdentity(client, address);
@@ -115,9 +117,6 @@ export function VerifyView() {
         ) : (
           <>
             <div className="flex flex-col gap-3">
-              <Badge tone="info" className="self-start">
-                Demo
-              </Badge>
               <ScreenTitle
                 eyebrow="Identity verification"
                 title="Verify your identity"

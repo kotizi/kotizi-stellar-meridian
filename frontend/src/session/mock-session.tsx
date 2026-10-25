@@ -43,8 +43,12 @@ export function MockSession({ children }: { children: ReactNode }) {
       status: address === undefined ? "loading" : address ? "signedIn" : "signedOut",
       address: address ?? null,
       label: address ? "demo@kotizi.app" : null,
-      // The mock chain client doesn't sign anything.
+      // No Freighter behind the mock: email only.
+      loginMethods: ["email"],
+      walletOnly: false,
+      // The mock chain client doesn't sign anything, and lets every account create groups.
       signer: null,
+      adminWallet: null,
       getAccessToken: async () => null,
       isNewAccount: identityCheck.isNewAccount,
       newAccountPending: Boolean(address) && identityCheck.pending,

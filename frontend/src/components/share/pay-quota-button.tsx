@@ -39,6 +39,7 @@ export function PayQuotaButton({
     const result = await run("pay", (c) => c.payQuota({ owner: address, membership: membership.id }), {
       pending: "Paying installment…",
       success: `${installmentName(share)} paid`,
+      failure: "Payment not completed",
     });
     if (result) onPaid?.({ signature: result.signature, method });
   };

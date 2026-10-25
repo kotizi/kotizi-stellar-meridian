@@ -31,7 +31,7 @@ export const groupStateViewSchema = z.object({
 
 type GroupStateView = z.infer<typeof groupStateViewSchema>;
 
-type GroupState = Omit<Group, "id" | "address" | "organizer" | "groupId" | "mint" | "drawSource" | "commitLedger">;
+type GroupState = Omit<Group, "id" | "address" | "organizer" | "groupId" | "mint" | "drawSource" | "drawRound">;
 
 const STATUS = { Open: "open", DrawPending: "drawPending", Completed: "completed" } as const;
 

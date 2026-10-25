@@ -2,7 +2,16 @@ import { sleep } from "@/lib/sleep";
 
 import type { KotiziClient } from "./client";
 import { drawPhase } from "./derive";
+import { DRAW_ROUND_DELAY, QUICKNET_PERIOD } from "./drand";
 import type { DrawIdleReason, GroupId } from "./types";
+
+const DRAW_DELAY_MS = 1_500;
+/**
+ * How long one click waits for the winner: the drand round is `DRAW_ROUND_DELAY` rounds (30 s) after
+ * the request, and the backend settles a few seconds after it's published. 45 s, then the keeper
+ * finishes on its own and the screen shows the winner once it reads it.
+ */
+const DRAW_ATTEMPTS = Math.ceil(((DRAW_ROUND_DELAY * QUICKNET_PERIOD + 15) * 1_000) / DRAW_DELAY_MS);
 
 export type DrawOutcome =
   /** A winner was drawn. `signature` is the settle transaction when this session sent it. */
@@ -22,7 +31,7 @@ export type DrawOutcome =
 export async function drawUntilSettled(
   client: KotiziClient,
   group: GroupId,
-  { attempts = 10, delayMs = 1_500 }: { attempts?: number; delayMs?: number } = {},
+  { attempts = DRAW_ATTEMPTS, delayMs = DRAW_DELAY_MS }: { attempts?: number; delayMs?: number } = {},
 ): Promise<DrawOutcome> {
   const current = await client.getGroup(group);
   if (current && drawPhase(current, Math.floor(Date.now() / 1000)) === "belowThreshold") {
