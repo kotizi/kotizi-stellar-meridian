@@ -12,6 +12,12 @@ target/
 # secrets: never commit keys (note: no blanket *.json ignore, specs/configs are tracked)
 keypairs/
 .keypairs/
+keypairs*.zip
+*.key
+# editor swap/backup files can hold a copy of .env
+*.swp
+*.swo
+*~
 *-keypair.json
 *-secret.json
 id.json

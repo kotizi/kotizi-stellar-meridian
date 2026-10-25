@@ -12,15 +12,24 @@ npm run dev
 
 ## Roles and keys
 
-Key files hold a secret seed (`S...`), live outside git and are never logged. One file may serve several roles.
+Every role key is a secret seed (`S...`), never logged. Give each role **either** a file (`*_KEYFILE`, kept outside git)
+**or** the seed itself in a secret environment variable (`*_SECRET`, for hosts without files such as Railway). Setting both
+for one role is refused at start-up, and a malformed seed is rejected without echoing it. One key may serve several roles.
 
 | Key | Role |
 |---|---|
-| `SPONSOR_KEYFILE` | source and fee payer of relayed transactions; creates accounts for new wallets |
-| `KEEPER_KEYFILE` | signs `request_draw` / `settle_draw`, pays its own fee (defaults to the sponsor) |
-| `KYC_KEYFILE` | must be the contract's `kyc_authority` (`approve_kyc`) |
-| `MINT_KEYFILE` | must be the admin of `FAUCET_TOKEN` (faucet mint) |
+| `SPONSOR_KEYFILE` / `SPONSOR_SECRET` | **required.** Source and fee payer of relayed transactions; creates accounts for new wallets |
+| `KEEPER_KEYFILE` / `KEEPER_SECRET` | signs `request_draw` / `settle_draw`, pays its own fee (defaults to the sponsor) |
+| `KYC_KEYFILE` / `KYC_SECRET` | must be the contract's `kyc_authority` (`approve_kyc`); needed with `KYC_MODE=auto` |
+| `MINT_KEYFILE` / `MINT_SECRET` | must be the admin of `FAUCET_TOKEN` (faucet mint); needed with `FAUCET_ENABLED` |
 | `FAUCET_TOKEN` | the demo test token the faucet mints; required with `FAUCET_ENABLED` |
+
+Minimum to deploy on a host with only environment variables (Railway): `CONTRACT_ID`, `SPONSOR_SECRET`, `DATABASE_URL`
+(Postgres; migrations run at start) and `PRIVY_APP_ID` / `PRIVY_APP_SECRET`, plus `CORS_ORIGINS` for the frontend's URL.
+Add `KYC_MODE=auto` + `KYC_SECRET`, `FAUCET_ENABLED=true` + `MINT_SECRET` + `FAUCET_TOKEN`, and `KEEPER_ENABLED=true` for the
+demo features. `tsx` is a regular dependency, so `npm ci --omit=dev` followed by `npm start` works.
+An empty variable counts as unset (its default applies), and with `NODE_ENV=production` the API refuses to start without
+`DATABASE_URL` rather than silently using the embedded, non-persistent database.
 
 The admin signs `create_group` with their own wallet (not here), so no admin key lives on the server.
 

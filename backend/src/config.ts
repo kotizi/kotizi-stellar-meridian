@@ -4,6 +4,9 @@ const bool = z
   .enum(['true', 'false'])
   .transform((v) => v === 'true');
 
+/** A Stellar secret seed. The message deliberately never echoes the value. */
+const seed = z.string().regex(/^S[A-Z2-7]{55}$/, 'must be a Stellar secret seed (S...)').optional();
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -47,15 +50,21 @@ const schema = z.object({
   /** The deployed Kotizi contract (C...). */
   CONTRACT_ID: z.string().regex(/^C[A-Z2-7]{55}$/, 'CONTRACT_ID must be a Stellar contract address (C...)'),
 
-  // Files holding a secret seed (S...), outside git. One file may serve several roles. Never logged.
-  /** Source and fee payer of relayed transactions; also pays account activation. */
-  SPONSOR_KEYFILE: z.string(),
-  /** Signs the draw commits and reveals and pays their fee. Defaults to the sponsor key. */
+  // Each role's key is a secret seed (S...), given either as a file outside git (*_KEYFILE) or as a secret
+  // environment variable (*_SECRET, for hosts without files such as Railway); never both for one role. One key
+  // may serve several roles. Seeds are never logged.
+  /** Source and fee payer of relayed transactions; also pays account activation. Required. */
+  SPONSOR_KEYFILE: z.string().optional(),
+  SPONSOR_SECRET: seed,
+  /** Signs request_draw / settle_draw and pays their fee. Defaults to the sponsor key. */
   KEEPER_KEYFILE: z.string().optional(),
+  KEEPER_SECRET: seed,
   /** Must be the contract's kyc_authority. Needed when KYC_MODE=auto. */
   KYC_KEYFILE: z.string().optional(),
-  /** Must be the admin of the test token. Needed when FAUCET_ENABLED. */
+  KYC_SECRET: seed,
+  /** Must be the admin of FAUCET_TOKEN. Needed when FAUCET_ENABLED. */
   MINT_KEYFILE: z.string().optional(),
+  MINT_SECRET: seed,
   /** XLM an activated account is created with (the base reserve is 1 XLM). */
   ACCOUNT_ACTIVATION_XLM: z.string().regex(/^\d+(\.\d{1,7})?$/).default('2'),
 });
@@ -63,9 +72,13 @@ const schema = z.object({
 export type Config = z.infer<typeof schema>;
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
-  const cfg = schema.parse(env);
+  // A variable left empty (a placeholder pasted into a host's settings) counts as unset, so its default applies.
+  const cfg = schema.parse(Object.fromEntries(Object.entries(env).filter(([, v]) => v !== '')));
   if (cfg.AUTH_MODE === 'dev' && cfg.NODE_ENV === 'production') {
     throw new Error('AUTH_MODE=dev is not allowed when NODE_ENV=production');
+  }
+  if (cfg.NODE_ENV === 'production' && !cfg.DATABASE_URL) {
+    throw new Error('DATABASE_URL is required in production (the embedded database is not persistent on most hosts)');
   }
   if (cfg.AUTH_MODE === 'privy' && (!cfg.PRIVY_APP_ID || !cfg.PRIVY_APP_SECRET)) {
     throw new Error('PRIVY_APP_ID and PRIVY_APP_SECRET are required when AUTH_MODE=privy');
@@ -73,8 +86,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (cfg.NETWORK_PASSPHRASE !== 'Test SDF Network ; September 2015') {
     throw new Error('Only Stellar testnet is supported (NETWORK_PASSPHRASE)');
   }
-  if (cfg.KYC_MODE === 'auto' && !cfg.KYC_KEYFILE) throw new Error('KYC_MODE=auto needs KYC_KEYFILE');
-  if (cfg.FAUCET_ENABLED && !cfg.MINT_KEYFILE) throw new Error('FAUCET_ENABLED needs MINT_KEYFILE');
+  for (const role of ['SPONSOR', 'KEEPER', 'KYC', 'MINT'] as const) {
+    if (cfg[`${role}_KEYFILE`] && cfg[`${role}_SECRET`]) throw new Error(`Set only one of ${role}_KEYFILE and ${role}_SECRET`);
+  }
+  if (!cfg.SPONSOR_KEYFILE && !cfg.SPONSOR_SECRET) throw new Error('SPONSOR_KEYFILE or SPONSOR_SECRET is required');
+  if (cfg.KYC_MODE === 'auto' && !cfg.KYC_KEYFILE && !cfg.KYC_SECRET) throw new Error('KYC_MODE=auto needs KYC_KEYFILE or KYC_SECRET');
+  if (cfg.FAUCET_ENABLED && !cfg.MINT_KEYFILE && !cfg.MINT_SECRET) throw new Error('FAUCET_ENABLED needs MINT_KEYFILE or MINT_SECRET');
   if (cfg.FAUCET_ENABLED && !cfg.FAUCET_TOKEN) throw new Error('FAUCET_ENABLED needs FAUCET_TOKEN (the test token the mint key administers)');
   return cfg;
 }

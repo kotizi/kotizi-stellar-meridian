@@ -5,7 +5,7 @@ import { DevAuthenticator } from './auth/dev.js';
 import { PrivyAuthenticator, privyDirectory } from './auth/privy.js';
 import { openDb } from './db/index.js';
 import type { Deps } from './deps.js';
-import { keypairLoader } from './stellar/keys.js';
+import { loadKeys } from './stellar/keys.js';
 import { DrandBeacons } from './drand.js';
 import { RpcChain } from './stellar/rpc-chain.js';
 
@@ -13,8 +13,7 @@ async function main() {
   const config = loadConfig();
   const { db, close } = await openDb({ url: config.DATABASE_URL, dir: config.PGLITE_DIR });
 
-  const load = keypairLoader();
-  const sponsor = load(config.SPONSOR_KEYFILE);
+  const { sponsor, keeper, kycSigner, mintSigner } = loadKeys(config);
   const server = new rpc.Server(config.STELLAR_RPC_URL, { allowHttp: /localhost|127\.0\.0\.1/.test(config.STELLAR_RPC_URL) });
   const chain = new RpcChain(server, config.CONTRACT_ID, config.NETWORK_PASSPHRASE, sponsor);
 
@@ -28,16 +27,16 @@ async function main() {
     chain,
     beacons: new DrandBeacons(config.DRAND_URL),
     sponsor,
-    keeper: config.KEEPER_KEYFILE ? load(config.KEEPER_KEYFILE) : sponsor,
-    kycSigner: config.KYC_KEYFILE ? load(config.KYC_KEYFILE) : undefined,
-    mintSigner: config.MINT_KEYFILE && config.FAUCET_ENABLED ? load(config.MINT_KEYFILE) : undefined,
+    keeper,
+    kycSigner,
+    mintSigner,
   };
 
   // Fail fast on a wrong contract id / RPC, and when the server keys don't match the roles they play.
   const contract = await chain.config();
   const app = await buildApp(deps);
   if (deps.kycSigner && deps.kycSigner.publicKey() !== contract.kycAuthority) {
-    app.log.warn('KYC_KEYFILE is not the contract kyc_authority; automatic KYC disabled');
+    app.log.warn('The KYC key is not the contract kyc_authority; automatic KYC disabled');
     deps.kycSigner = undefined;
   }
   if (config.AUTH_MODE === 'dev') app.log.warn('AUTH_MODE=dev: tokens are NOT verified. Never expose this.');
