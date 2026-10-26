@@ -7,4 +7,4 @@ Disallow: /draws
 Disallow: /verify
 Disallow: /admin
 
-Sitemap: https://kotizi-stellar-meridian.vercel.app/sitemap.xml
+Sitemap: https://kotizifinance-meridian.vercel.app/sitemap.xml

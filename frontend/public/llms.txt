@@ -28,7 +28,7 @@ money moves.
 
 ## Pages
 
-- [kotizi](https://kotizi-stellar-meridian.vercel.app/): landing page and sign-in. Groups, payments
+- [kotizi](https://kotizifinance-meridian.vercel.app/): landing page and sign-in. Groups, payments
   and draws require a signed-in account.
 
 ## On chain
