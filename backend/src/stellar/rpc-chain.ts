@@ -16,7 +16,7 @@ import {
 import { sleep } from '../util.js';
 import { u32 } from './invoke.js';
 import type { Chain, ContractConfig, Prepared, RawGroup, RawWinner, TokenInfo } from './chain.js';
-import { StellarTxError } from './errors.js';
+import { StellarTxError, zeroIfNoTrustline } from './errors.js';
 
 const TX_TIMEOUT_SECS = 120;
 const POLL_MS = 1_000;
@@ -107,7 +107,7 @@ export class RpcChain implements Chain {
   }
 
   async tokenBalance(wallet: string, token: string): Promise<bigint> {
-    return BigInt((await this.view('balance', [new Address(wallet).toScVal()], token)) as bigint);
+    return zeroIfNoTrustline(async () => BigInt((await this.view('balance', [new Address(wallet).toScVal()], token)) as bigint));
   }
 
   async accountExists(wallet: string): Promise<boolean> {

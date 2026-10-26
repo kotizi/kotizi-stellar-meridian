@@ -3,7 +3,7 @@ import { schema } from '../db/index.js';
 import type { Deps } from '../deps.js';
 import { HttpError } from '../routes/common.js';
 import { invokeFunc, u32, addr } from '../stellar/invoke.js';
-import { StellarTxError } from '../stellar/errors.js';
+import { StellarTxError, isMissingTrustline } from '../stellar/errors.js';
 import { withAccountLock } from '../stellar/lock.js';
 import { assertBudget } from './budget.js';
 import { RelayError, groupIdOf, validateRelayTransaction, type RelayCheck, type RelayFunction } from './validate.js';
@@ -35,6 +35,9 @@ async function policyFor(deps: Deps, userWallets: string[], groupId: number | un
 
 /** Maps a failed simulation/transaction to the answer the frontend expects (422 + the contract error name). */
 function asHttp(e: unknown): never {
+  if (isMissingTrustline(e)) {
+    throw new HttpError(422, 'missing_trustline', 'The wallet has no trustline for the group token: add it before paying');
+  }
   if (e instanceof StellarTxError) {
     throw new HttpError(422, e.contractError ? 'contract_error' : 'transaction_failed', e.contractError ?? e.message);
   }

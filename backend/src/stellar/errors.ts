@@ -37,3 +37,21 @@ export class StellarTxError extends Error {
     this.contractError = m ? CONTRACT_ERRORS[Number(m[1])] : undefined;
   }
 }
+
+/**
+ * A Stellar Asset Contract (USDC, USDT0...) fails with "trustline entry is missing for account" when asked
+ * the balance of, or to move tokens from, an account that has no trustline to the asset.
+ */
+export function isMissingTrustline(e: unknown): boolean {
+  return e instanceof StellarTxError && /trustline entry is missing/i.test(e.message);
+}
+
+/** A balance read where "no trustline" simply means the account holds none of the token. */
+export async function zeroIfNoTrustline(read: () => Promise<bigint>): Promise<bigint> {
+  try {
+    return await read();
+  } catch (e) {
+    if (isMissingTrustline(e)) return 0n;
+    throw e;
+  }
+}
