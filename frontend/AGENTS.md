@@ -249,6 +249,10 @@ src/session/                         src/chain/
                                                              admin-tx.ts (the admin's create_group, on demand)
 src/content/groups.ts   property content per group slug (mock seed + metadata route)
 app/metadata/[file]     GET /metadata/<slug>.json: NFT metadata behind Group.uri (CORS open)
+app/robots.txt sitemap.xml   static; only the landing page is public (the app's screens need a login)
+public/llms.txt         what kotizi is, for LLMs
+                        (all three hard-code the production URL; llms.txt also the contract id: update them
+                        when either changes)
 ```
 
 Providers nest as `SessionProvider → ChainProvider → UI` (`app/providers.tsx`). `SessionProvider`

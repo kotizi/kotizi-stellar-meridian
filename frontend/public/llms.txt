@@ -1,0 +1,38 @@
+# kotizi
+
+> kotizi is a digital buying group for your own home, with no down payment, built on Stellar. It
+> follows the Brazilian "consórcio" (a rotating savings and credit association): members join a
+> group, pay a fixed installment before every draw, and each draw contemplates one eligible share at
+> random, whose credit value is reserved for the property.
+
+This is a hackathon demo (Stellar Meridian) running on Stellar testnet with test tokens: no real
+money moves.
+
+## How it works
+
+- Groups: a fixed number of shares (2 to 64), the same installment for every share and one draw per
+  period. Credit value = installment × shares; the admin fee is at most 10%.
+- Sign in: email login through Privy, which creates an embedded Stellar wallet. Identity
+  verification once (a demo form), required before joining a group.
+- Shares: joining takes the group's next share and mints it as an NFT in the Kotizi contract, so the
+  share and the right to pay with it move with the NFT.
+- Installments: each share pays its installment into the group's pool once per period. Network fees
+  and account reserves are paid by kotizi's backend (sponsored Soroban authorization entries), so
+  users never hold XLM.
+- Draw: after the due date anyone can start it ("Draw now"), and a backend keeper also does. The
+  contract commits to a future drand quicknet round and verifies that round's BLS12-381 signature on
+  chain, so nobody, kotizi included, can know or steer the result. Only shares that paid the current
+  installment and haven't been contemplated yet are eligible.
+- Credit: a contemplated share's credit stays in the contract, reserved for the company responsible
+  for the property. Contemplated shares keep paying their installments until the group ends.
+
+## Pages
+
+- [kotizi](https://kotizi-stellar-meridian.vercel.app/): landing page and sign-in. Groups, payments
+  and draws require a signed-in account.
+
+## On chain
+
+- [Kotizi contract on Stellar testnet](https://stellar.expert/explorer/testnet/contract/CDLG5PWRFTSLQNCWGFEBU4AEHKPMQCI5O4KXB3RGINP4Q2AY5BTQVFCR):
+  the Soroban contract that holds the groups, the shares (NFTs), the payments and the draws.
+- [drand](https://drand.love/): the public randomness beacon the draws use.
