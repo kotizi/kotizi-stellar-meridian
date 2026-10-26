@@ -4,7 +4,7 @@ import { assertBudget } from '../relay/budget.js';
 import { HttpError, requireAuth } from './common.js';
 
 /**
- * POST /v1/groups/:id/draw: "draw now". request_draw and settle_draw need no user signature, so
+ * POST /v1/groups/:id/draw: "draw now". request_draw is keeper-only and settle_draw needs no signature, so
  * instead of relaying a transaction the keeper runs the next step itself. Returns the action taken, or
  * `action: null` with a `reason` (not_due, no_eligible_cotas, waiting_for_randomness, completed)
  * when nothing can be done yet.

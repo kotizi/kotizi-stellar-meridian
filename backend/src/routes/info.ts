@@ -12,6 +12,7 @@ export function infoRoutes(app: FastifyInstance, deps: Deps) {
       networkPassphrase: deps.config.NETWORK_PASSPHRASE,
       admin: cfg.admin,
       kycAuthority: cfg.kycAuthority,
+      keeper: cfg.keeper,
       /** Tokens groups can be created in. */
       tokens,
       /** The account that pays relayed transactions (informational: the wallet never sets it). */

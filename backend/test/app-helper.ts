@@ -35,6 +35,7 @@ export async function harness(env: Record<string, string> = {}): Promise<Harness
   const beacons = new FakeBeacons();
   const [sponsor, keeper, kyc, mint] = [newKey(), newKey(), newKey(), newKey()];
   chain.kycAuthority = kyc.publicKey();
+  chain.keeper = keeper.publicKey();
   const config = loadConfig({
     AUTH_MODE: 'dev',
     NODE_ENV: 'test',

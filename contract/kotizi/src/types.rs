@@ -41,6 +41,8 @@ pub enum DataKey {
 pub struct Config {
     pub admin: Address,
     pub kyc_authority: Address,
+    /// The only account that may call `request_draw` (the draw bot).
+    pub keeper: Address,
 }
 
 /// A token groups may use, with the decimals it reported when it was enabled (quotas are in its base units).

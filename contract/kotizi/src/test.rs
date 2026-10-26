@@ -20,6 +20,7 @@ const QUOTA: i128 = 100_000_000; // 100 USDC
 struct Setup<'a> {
     e: Env,
     admin: Address,
+    keeper: Address,
     usdc: TestUsdcClient<'a>,
     kotizi: KotiziClient<'a>,
     nft: NonFungibleTokenClient<'a>,
@@ -32,8 +33,9 @@ fn setup<'a>() -> Setup<'a> {
     e.ledger().set_timestamp(GENESIS + 2_999_000);
     let admin = Address::generate(&e);
     let kyc = Address::generate(&e);
+    let keeper = Address::generate(&e);
     let token = e.register(TestUsdc, (&admin, 6u32));
-    let id = e.register(Kotizi, (&admin, &kyc));
+    let id = e.register(Kotizi, (&admin, &kyc, &keeper));
     KotiziClient::new(&e, &id).add_token(&token);
     Setup {
         usdc: TestUsdcClient::new(&e, &token),
@@ -41,6 +43,7 @@ fn setup<'a>() -> Setup<'a> {
         nft: NonFungibleTokenClient::new(&e, &id),
         e,
         admin,
+        keeper,
     }
 }
 
@@ -856,4 +859,44 @@ fn prize_and_fee_are_paid_in_the_groups_own_token() {
     assert_eq!(seven.balance(&s.admin), before.2 + fee);
     assert_eq!(s.usdc.balance(&owner), before.1); // the other token is untouched
     assert_eq!(seven.balance(&s.kotizi.address), 0);
+}
+
+#[test]
+fn only_the_keeper_can_request_a_draw() {
+    let s = setup();
+    let id = s.group(2);
+    let (a, b) = (s.member(QUOTA), s.member(QUOTA));
+    s.kotizi.join_group(&id, &a);
+    s.kotizi.join_group(&id, &b);
+    s.kotizi.pay_quota(&id, &0);
+    s.e.ledger()
+        .set_timestamp(s.kotizi.get_group(&id).next_draw_ts);
+
+    // the admin and a stranger are not the keeper: only its signature is accepted
+    for who in [&s.admin, &Address::generate(&s.e)] {
+        s.e.set_auths(&[]);
+        s.e.mock_auths(&[MockAuth {
+            address: who,
+            invoke: &MockAuthInvoke {
+                contract: &s.kotizi.address,
+                fn_name: "request_draw",
+                args: (&id,).into_val(&s.e),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(s.kotizi.try_request_draw(&id).is_err());
+        assert_eq!(s.kotizi.get_group(&id).status, Status::Open);
+    }
+
+    s.e.mock_auths(&[MockAuth {
+        address: &s.keeper,
+        invoke: &MockAuthInvoke {
+            contract: &s.kotizi.address,
+            fn_name: "request_draw",
+            args: (&id,).into_val(&s.e),
+            sub_invokes: &[],
+        },
+    }]);
+    s.kotizi.request_draw(&id);
+    assert_eq!(s.kotizi.get_group(&id).status, Status::DrawPending);
 }

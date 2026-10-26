@@ -57,14 +57,14 @@ The prize is paid in test USDC from the collected pool; "real estate" is narrati
 
 ## Contract state
 
-Constructor (`__constructor`, runs at deploy, so there is no first-come `initialize`): `admin`, `kyc_authority`. Fixed
+Constructor (`__constructor`, runs at deploy, so there is no first-come `initialize`): `admin`, `kyc_authority`, `keeper` (the only account that may `request_draw`; it picks when a due draw starts, never its outcome, and if it goes silent a draw stalls but no funds are at risk). Fixed
 afterwards. Tokens are enabled later with `add_token` (never removed: a group keeps its token).
 
 Storage keys (`#[contracttype] enum DataKey`), one entry per key, never an array of 64 inside one entry:
 
 | Key | Storage | Value |
 |---|---|---|
-| `Config` | instance | `{admin, kyc_authority}` |
+| `Config` | instance | `{admin, kyc_authority, keeper}` |
 | `Tokens` | instance | `Vec<TokenInfo{token, decimals}>`, at most 8 |
 | `GroupCount` | instance | `u32` |
 | `Kyc(Address)` | persistent | `u64` approved_at |
@@ -130,7 +130,7 @@ function runs; simulation fills that list, the transaction pays. A restored entr
 
 | # | Function | Auth | Notes |
 |---|---|---|---|
-| 1 | `__constructor(admin, kyc_authority)` | - | empty token allowlist |
+| 1 | `__constructor(admin, kyc_authority, keeper)` | - | empty token allowlist |
 | 1b | `add_token(token)` | `admin` | reads `decimals()` (<= 18), rejects duplicates, at most 8 tokens; `tokens()` lists them |
 | 2 | `approve_kyc(wallet)` | `kyc_authority` | sets `Kyc`; error if already approved |
 | 3 | `create_group(name, uri, token, quota, max_members, period, admin_fee_bps)` | `admin` | `token` must be enabled; fee <= 10%, name <= 32 bytes, uri <= 200 bytes, quota > 0, period > 0 |
@@ -193,7 +193,7 @@ App                          Privy wallet (raw sign)             API (sponsor ke
 Allowlist: only this contract's id and `join_group`, `pay_quota`, `claim_prize`; no other contract, no
 `InvokeHostFunction` of other kinds, no classic operations from user input. Per-user daily limit and sponsor balance reserve as
 in the reference `relay/budget.ts`. The sponsor never appears as `member`/`owner`.
-`request_draw`/`settle_draw` are not relayed: they need no signature, so the keeper sends them with its own key (separate from
+`request_draw`/`settle_draw` are not relayed: `request_draw` needs the contract keeper's signature and `settle_draw` none, so the keeper sends them with its own key (separate from
 the sponsor key) and pays the fees. `approve_kyc` and faucet mints use their own keys, as in the reference (three-plus separate server keys, files now).
 
 Account activation (risk 3): onboarding also submits a sponsor-paid `CreateAccount` for the wallet if it has no ledger entry.

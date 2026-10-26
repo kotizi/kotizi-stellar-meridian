@@ -35,8 +35,9 @@ Roles, all set at deploy time or by the admin:
 |---|---|---|
 | `admin` | the key given to the constructor | `add_token`, `create_group`; receives the fee of each prize |
 | `kyc_authority` | second constructor argument | `approve_kyc` |
+| `keeper` | third constructor argument (the draw bot) | `request_draw` |
 | member | any KYC-approved account | `join_group`, then pay/claim for the cotas it owns |
-| anyone | any account | `request_draw`, `settle_draw`, all views |
+| anyone | any account | `settle_draw`, all views |
 
 ## 2. Setup
 
@@ -146,10 +147,11 @@ group is `Open`. Joining is allowed at any time until the group is full, so memb
 ### 4.4 Anyone: draw
 
 A draw is due once the ledger time passes `next_draw_ts` (group creation time + `period`, then each settlement + `period`)
-and at least one eligible cota has paid. **Nobody needs to be trusted for this step.** First request it:
+and at least one eligible cota has paid. Only the `keeper` can request it (the keeper chooses when a due draw starts, never its
+outcome: the drand round is derived from the ledger time), so with the CLI sign as the keeper key. First request it:
 
 ```bash
-stellar contract invoke --id $K --network testnet -- request_draw --group_id 2
+stellar contract invoke --id $K --network testnet --source keeper -- request_draw --group_id 2
 # event DrawRequested ... draw_round: 33384627
 ```
 
@@ -205,7 +207,7 @@ generated bindings). **Auth** is who must sign.
 
 | Function | Auth | Does |
 |---|---|---|
-| `__constructor(admin, kyc_authority)` | deployer (at deploy) | Stores the roles. No token yet. |
+| `__constructor(admin, kyc_authority, keeper)` | deployer (at deploy) | Stores the roles. No token yet. |
 | `add_token(token) -> Result<()>` | admin | Enables a SEP-41 token (decimals read from it, at most 18; at most 8 tokens; no duplicates). |
 | `approve_kyc(wallet) -> Result<()>` | kyc_authority | Marks the wallet as KYC-approved. Once only. |
 | `create_group(name, uri, token, quota, max_members, period, admin_fee_bps) -> Result<u32>` | admin | Creates a group in an enabled token and returns its id. Name up to 32 bytes, uri up to 200, `quota > 0`, 2 to 64 members, `period > 0`, fee up to 1000 bps. |
@@ -222,7 +224,7 @@ generated bindings). **Auth** is who must sign.
 
 | Function | Auth | Does |
 |---|---|---|
-| `request_draw(group_id) -> Result<()>` | none | Needs `now >= next_draw_ts` and at least one cota that paid and has not won. Freezes payments and stores `draw_round`. If a draw is already pending it can only be requested again an hour after its round was published. |
+| `request_draw(group_id) -> Result<()>` | keeper | Needs `now >= next_draw_ts` and at least one cota that paid and has not won. Freezes payments and stores `draw_round`. If a draw is already pending it can only be requested again an hour after its round was published. |
 | `settle_draw(group_id, signature: BytesN<96>) -> Result<()>` | none | Verifies the drand signature of `draw_round`, picks the winner, records the prize, advances the round and sets `next_draw_ts = now + period`. Moves no tokens. |
 
 ### Views (no signature)
@@ -236,7 +238,7 @@ generated bindings). **Auth** is who must sign.
 | `total_paid(group_id, index)` | total a cota has paid across rounds |
 | `group_count()` | number of groups |
 | `tokens()` | enabled tokens `[{token, decimals}]` |
-| `config()` | `{admin, kyc_authority}` |
+| `config()` | `{admin, kyc_authority, keeper}` |
 | `is_kyc(wallet)` | bool |
 | `token_id_of(group_id, index)` | the NFT token id of a cota |
 
@@ -308,7 +310,7 @@ Soroban contracts cannot read a ledger hash, and `env.prng()` is explicitly not 
 tolerate manipulation. Kotizi therefore verifies a **drand** beacon inside the contract:
 
 1. `request_draw` stores `draw_round`: the drand **quicknet** round published 10 rounds (30 s) after the ledger time
-   of the request. That round did not exist yet, and nobody, the requester and the keeper included, can know its
+   of the request. That round did not exist yet, and nobody, the keeper included, can know its
    signature in advance.
 2. When the round exists, anyone fetches its signature from any drand relay and calls `settle_draw`. The contract checks
    the BLS12-381 signature against the quicknet public key hardcoded in `contract/kotizi/src/drand.rs`
@@ -432,7 +434,7 @@ stellar contract deploy --wasm target/wasm32v1-none/release/test_usdc.wasm --net
 
 # kotizi
 stellar contract deploy --wasm target/wasm32v1-none/release/kotizi.wasm --network testnet \
-  -- --admin <G...admin> --kyc_authority <G...kyc>
+  -- --admin <G...admin> --kyc_authority <G...kyc> --keeper <G...keeper>
 
 stellar contract invoke --id <kotizi> --network testnet -- add_token --token <token>
 ```

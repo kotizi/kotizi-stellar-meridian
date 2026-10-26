@@ -15,7 +15,7 @@ export type Deps = {
   sponsor: Keypair;
   /** drand beacons for settle_draw. */
   beacons: Beacons;
-  /** Signs request_draw / settle_draw (anyone could; the keeper pays the fees). May be the sponsor key. */
+  /** Signs request_draw (must be the contract's keeper) and settle_draw, and pays the fees. May be the sponsor key. */
   keeper: Keypair;
   /** Signs approve_kyc (must be the contract's kyc_authority). Only when KYC_MODE=auto. */
   kycSigner?: Keypair;

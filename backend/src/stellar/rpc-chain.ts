@@ -100,7 +100,7 @@ export class RpcChain implements Chain {
   async config(): Promise<ContractConfig> {
     if (this.cachedConfig) return this.cachedConfig;
     const c = (await this.view('config')) as Native;
-    this.cachedConfig = { admin: String(c.admin), kycAuthority: String(c.kyc_authority) };
+    this.cachedConfig = { admin: String(c.admin), kycAuthority: String(c.kyc_authority), keeper: String(c.keeper) };
     return this.cachedConfig;
   }
 

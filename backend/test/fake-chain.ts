@@ -56,6 +56,7 @@ export class FakeChain implements Chain {
   readonly contractId = CONTRACT;
   admin = newKey().publicKey();
   kycAuthority = newKey().publicKey();
+  keeper = newKey().publicKey();
   ledgerSeq = 1_000;
   groupList: RawGroup[] = [];
   winnerList = new Map<number, RawWinner[]>();
@@ -71,7 +72,7 @@ export class FakeChain implements Chain {
   private nonce = 1n;
 
   async config(): Promise<ContractConfig> {
-    return { admin: this.admin, kycAuthority: this.kycAuthority };
+    return { admin: this.admin, kycAuthority: this.kycAuthority, keeper: this.keeper };
   }
   async tokens() {
     return [

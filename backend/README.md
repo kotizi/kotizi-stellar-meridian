@@ -19,7 +19,7 @@ for one role is refused at start-up, and a malformed seed is rejected without ec
 | Key | Role |
 |---|---|
 | `SPONSOR_KEYFILE` / `SPONSOR_SECRET` | **required.** Source and fee payer of relayed transactions; creates accounts for new wallets |
-| `KEEPER_KEYFILE` / `KEEPER_SECRET` | signs `request_draw` / `settle_draw`, pays its own fee (defaults to the sponsor) |
+| `KEEPER_KEYFILE` / `KEEPER_SECRET` | signs `request_draw` / `settle_draw`, pays its own fee (defaults to the sponsor). **Must be the contract's `keeper`**: only that account may `request_draw` (the API logs an error at start-up if it is not) |
 | `KYC_KEYFILE` / `KYC_SECRET` | must be the contract's `kyc_authority` (`approve_kyc`); needed with `KYC_MODE=auto` |
 | `MINT_KEYFILE` / `MINT_SECRET` | must be the admin of `FAUCET_TOKEN` (faucet mint); needed with `FAUCET_ENABLED` |
 | `FAUCET_TOKEN` | the demo test token the faucet mints; required with `FAUCET_ENABLED` |
@@ -145,8 +145,9 @@ A wallet needs a ledger account before it can authorize anything; `POST /v1/kyc`
 
 drand (PLAN.md, "Randomness"): `request_draw` makes the contract fix a future drand quicknet round; once that round
 exists the keeper fetches its signature from `DRAND_URL`, checks it locally against the pinned quicknet key, decompresses
-it to the 96-byte form the Soroban host takes and sends `settle_draw`. The keeper holds no secret and cannot influence the
-winner; anyone could send the same transaction. If a round goes unsettled for an hour (drand down) the draw is requested
+it to the 96-byte form the Soroban host takes and sends `settle_draw`. Only the contract's `keeper` account can send `request_draw`;
+the keeper holds no secret and cannot influence the winner (the round is fixed from the ledger time, and `settle_draw`
+is open to anyone). If the keeper is down a draw waits, but no funds are at risk. If a round goes unsettled for an hour (drand down) the draw is requested
 again with a new round.
 
 ### Upkeep: keeping the contract's entries alive

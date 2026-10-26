@@ -30,7 +30,7 @@ export type RawGroup = {
 
 export type RawWinner = { index: number; gross: bigint; wonRound: number };
 
-export type ContractConfig = { admin: string; kycAuthority: string };
+export type ContractConfig = { admin: string; kycAuthority: string; keeper: string };
 
 /** A token groups can be created in, with its decimals (quotas are in base units). */
 export type TokenInfo = { token: string; decimals: number };

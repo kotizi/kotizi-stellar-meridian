@@ -39,6 +39,9 @@ async function main() {
     app.log.warn('The KYC key is not the contract kyc_authority; automatic KYC disabled');
     deps.kycSigner = undefined;
   }
+  if (config.KEEPER_ENABLED && keeper.publicKey() !== contract.keeper) {
+    app.log.error('The keeper key is not the contract keeper: request_draw will be rejected');
+  }
   if (config.AUTH_MODE === 'dev') app.log.warn('AUTH_MODE=dev: tokens are NOT verified. Never expose this.');
   app.log.info({ sponsor: sponsor.publicKey(), contract: config.CONTRACT_ID, rpc: config.STELLAR_RPC_URL }, 'sponsor account');
 

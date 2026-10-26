@@ -89,12 +89,13 @@ fn or_panic<T>(e: &Env, r: Result<T, Error>) -> T {
 
 #[contractimpl]
 impl Kotizi {
-    pub fn __constructor(e: &Env, admin: Address, kyc_authority: Address) {
+    pub fn __constructor(e: &Env, admin: Address, kyc_authority: Address, keeper: Address) {
         e.storage().instance().set(
             &DataKey::Config,
             &Config {
                 admin,
                 kyc_authority,
+                keeper,
             },
         );
         e.storage().instance().set(&DataKey::GroupCount, &0u32);
@@ -308,11 +309,12 @@ impl Kotizi {
     // -------------------------------------------------------------- draw
 
     /// Fixes the drand round that will decide this draw and freezes payments and the eligible set until
-    /// `settle_draw`. Needs no signature: the round is derived from the ledger time, and anyone may ask
-    /// for a due draw. The round is the one published `DRAW_ROUND_DELAY` rounds after the current one, so
+    /// `settle_draw`. Keeper only: the keeper picks when a due draw starts, never its outcome, because
+    /// the round is derived from the ledger time. The round is the one published `DRAW_ROUND_DELAY` rounds after the current one, so
     /// nobody knows its randomness yet, and it is fixed here, so nobody can pick another. A pending draw
     /// can be requested again (a new round) only once its round is `DRAW_EXPIRY_SECS` old.
     pub fn request_draw(e: &Env, group_id: u32) -> Result<(), Error> {
+        config(e).keeper.require_auth();
         let mut group = load_group(e, group_id)?;
         let now = e.ledger().timestamp();
         if now < group.next_draw_ts {
