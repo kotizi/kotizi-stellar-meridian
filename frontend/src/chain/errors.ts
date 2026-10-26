@@ -33,6 +33,11 @@ const PROGRAM_MESSAGES = {
   NotAssetOwner: "This share belongs to another account",
   KycRequired: "Identity verification required",
   InsufficientFunds: "Insufficient balance to pay the installment",
+  /**
+   * The group's token is a Stellar asset (USDC…) and the account has no trustline for it; the app
+   * doesn't create one (a classic operation the relay can't send).
+   */
+  TrustlineRequired: "Your account can't pay in this group's currency yet",
   /** The checkout's deposit on test networks (the backend faucet): one per wallet per day. */
   FaucetLimit: "Deposits are limited to one a day",
   /** Demo identity verification (backend) is turned off (`KYC_MODE=off`). */

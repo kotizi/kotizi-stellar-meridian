@@ -114,6 +114,8 @@ export function toStellarError(error: unknown): unknown {
 function stellarBackendCode(e: BackendError): KotiziErrorCode | null {
   if (e.code === "contract_error" || e.code === "draw_failed") return CONTRACT_ERRORS[e.message] ?? null;
   if (e.code === "transaction_failed" && TOKEN_INSUFFICIENT_BALANCE.test(e.message)) return "InsufficientFunds";
+  // A Stellar asset (USDC…) the wallet holds no trustline for: it can't pay or receive in that token.
+  if (e.code === "missing_trustline") return "TrustlineRequired";
   // The wallet has no ledger account: `POST /v1/kyc` (identity verification) creates it.
   if (e.code === "account_not_active") return "KycRequired";
   // The signed authorization outlived its ledger: prepare and sign again.

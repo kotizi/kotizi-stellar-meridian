@@ -53,6 +53,7 @@ describe("backend codes", () => {
     expect(code(toStellarError(new BackendError(409, "account_not_active", "")))).toBe("KycRequired");
     expect(code(toStellarError(new BackendError(409, "authorization_expired", "")))).toBe("TransactionExpired");
     expect(code(toStellarError(new BackendError(403, "not_user_wallet", "")))).toBe("NotAssetOwner");
+    expect(code(toStellarError(new BackendError(422, "missing_trustline", "")))).toBe("TrustlineRequired");
   });
 
   test("the shared mapping: session, budget, faucet, outages", () => {
