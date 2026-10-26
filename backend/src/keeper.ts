@@ -43,6 +43,11 @@ export function idleReason(g: KeeperView, nowSecs: bigint): IdleReason {
 
 export type KeeperAction = { group: number; action: Step; txHash?: string; error?: string };
 
+/** Groups whose entries still matter: not finished, or finished with prizes waiting to be claimed. */
+export const needsUpkeep = (g: Pick<RawGroup, 'status' | 'unclaimedBitmap'>) => g.status !== GroupStatus.Completed || g.unclaimedBitmap !== 0n;
+
+export type MaintenanceAction = { target: 'contract' | number; txHash?: string; entries?: number; minRemaining?: number; error?: string };
+
 /**
  * Drives draws forward so nobody has to click: `request_draw` when due, then `settle_draw` with the
  * drand beacon of the round the contract fixed. The keeper has no say in the outcome and holds no secret
@@ -50,7 +55,9 @@ export type KeeperAction = { group: number; action: Step; txHash?: string; error
  */
 export class Keeper {
   private timer: NodeJS.Timeout | undefined;
+  private maintenanceTimer: NodeJS.Timeout | undefined;
   private running = false;
+  private maintaining = false;
 
   constructor(
     private readonly deps: Deps,
@@ -59,11 +66,59 @@ export class Keeper {
 
   start() {
     this.timer = setInterval(() => void this.safeTick(), this.deps.config.KEEPER_INTERVAL_MS);
+    // Upkeep: once shortly after start (a restart is a good moment to catch up), then on its own slow schedule.
+    setTimeout(() => void this.safeMaintain(), 15_000).unref();
+    this.maintenanceTimer = setInterval(() => void this.safeMaintain(), this.deps.config.KEEPER_MAINTENANCE_INTERVAL_MS);
     this.log.info({ keeper: this.deps.keeper.publicKey() }, 'keeper started');
   }
 
   stop() {
     if (this.timer) clearInterval(this.timer);
+    if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
+  }
+
+  private async safeMaintain() {
+    if (this.maintaining) return;
+    this.maintaining = true;
+    try {
+      await this.maintain();
+    } catch (e) {
+      this.log.error({ err: String(e) }, 'keeper maintenance failed');
+    } finally {
+      this.maintaining = false;
+    }
+  }
+
+  /**
+   * Keeps the contract alive: Soroban entries expire unless their lifetime is extended, and the NFT library keeps the
+   * owner of each cota only ~30 days, so a quiet group would lose them. For the contract itself and for every group
+   * that still matters, extends what is about to expire (and costs nothing when it is healthy). One failing target
+   * does not stop the others.
+   */
+  async maintain(): Promise<MaintenanceAction[]> {
+    const { chain, keeper, config } = this.deps;
+    const opts = { extendTo: config.TTL_EXTEND_TO_LEDGERS, whenBelow: Math.floor(config.TTL_EXTEND_TO_LEDGERS / 2) };
+    const targets: ('contract' | RawGroup)[] = ['contract', ...(await chain.groups()).filter(needsUpkeep)];
+    const done: MaintenanceAction[] = [];
+    for (const t of targets) {
+      const target = t === 'contract' ? 'contract' : t.id;
+      try {
+        const plan = await chain.prepareExtend(keeper.publicKey(), t === 'contract' ? null : t.id, opts);
+        if (!plan) continue;
+        const txHash = await withAccountLock(keeper.publicKey(), async () => {
+          plan.transaction.sign(keeper);
+          return chain.send(plan.transaction);
+        });
+        await this.audit({ wallet: keeper.publicKey(), txHash, kinds: 'extend_ttl', estStroops: plan.estFeeStroops });
+        this.log.info({ target, entries: plan.entries, minRemaining: plan.minRemaining, txHash }, 'keeper extended ttl');
+        done.push({ target, txHash, entries: plan.entries, minRemaining: plan.minRemaining });
+      } catch (e) {
+        const error = e instanceof StellarTxError ? (e.contractError ?? e.message) : e instanceof Error ? e.message : String(e);
+        this.log.warn({ target, error }, 'keeper ttl extension failed');
+        done.push({ target, error });
+      }
+    }
+    return done;
   }
 
   private async safeTick() {
@@ -107,19 +162,22 @@ export class Keeper {
           invokeFunc(this.deps.chain.contractId, 'settle_draw', [u32(g.id), nativeToScVal(Buffer.from(signature), { type: 'bytes' })]),
         );
       }
-      await this.deps.db.insert(schema.sponsoredTx).values({
-        userId,
-        wallet: keeper.publicKey(),
-        txHash,
-        kinds: step === 'request' ? 'request_draw' : 'settle_draw',
-        estStroops: 0,
-      });
+      await this.audit({ userId, wallet: keeper.publicKey(), txHash, kinds: step === 'request' ? 'request_draw' : 'settle_draw', estStroops: 0 });
       this.log.info({ group: g.id, action: step, txHash }, 'keeper sent');
       return { group: g.id, action: step, txHash };
     } catch (e) {
       const error = e instanceof StellarTxError ? (e.contractError ?? e.message) : e instanceof Error ? e.message : String(e);
       this.log.warn({ group: g.id, action: step, error }, 'keeper step failed');
       return { group: g.id, action: step, error };
+    }
+  }
+
+  /** Records a sent transaction. It is already on the network by now, so a failed record is logged, never a failed step. */
+  private async audit(row: { userId?: string; wallet: string; txHash: string; kinds: string; estStroops: number }) {
+    try {
+      await this.deps.db.insert(schema.sponsoredTx).values({ userId: 'keeper', ...row });
+    } catch (e) {
+      this.log.warn({ txHash: row.txHash, err: String(e) }, 'could not record a sent transaction');
     }
   }
 

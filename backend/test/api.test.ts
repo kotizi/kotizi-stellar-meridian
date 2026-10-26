@@ -84,9 +84,10 @@ describe('reads', () => {
     h.chain.kyc.add(user);
     h.chain.usdc.set(user, 5_000_000n);
     h.chain.balances7.set(user, 70_000_000n);
+    h.chain.noTrustline.set(TOKEN_7, new Set([user])); // TOKEN_7 stands for a SAC the wallet has no trustline for
     const me = (await get('/v1/me', user)).json();
     expect(me.wallets).toEqual([
-      { address: user, active: true, kyc: true, balances: { [TOKEN]: '5000000', [TOKEN_7]: '70000000' } },
+      { address: user, active: true, kyc: true, balances: { [TOKEN]: '5000000', [TOKEN_7]: '0' }, trustlines: { [TOKEN]: true, [TOKEN_7]: false } },
     ]);
     expect(me.cotas.map((c: { group: string; index: number; canClaim: boolean; prize: string }) => [c.group, c.index, c.canClaim, c.prize])).toEqual([
       ['0', 0, false, '0'],
@@ -121,6 +122,18 @@ describe('onboarding', () => {
     const res = await off.app.inject({ method: 'POST', url: '/v1/kyc', headers: bearer(user), payload: {} });
     expect(res.statusCode).toBe(501);
     await off.close();
+  });
+
+  it('the faucet amount follows the token’s decimals (and refuses a token the contract does not list)', async () => {
+    const seven = await harness({ FAUCET_TOKEN: TOKEN_7 });
+    expect((await seven.app.inject({ method: 'POST', url: '/v1/faucet', headers: bearer(user), payload: {} })).json().amount).toBe('10000000000'); // 1000 x 10^7
+    await seven.close();
+    const unknown = await harness({ FAUCET_TOKEN: `C${'B'.repeat(55)}` });
+    const res = await unknown.app.inject({ method: 'POST', url: '/v1/faucet', headers: bearer(user), payload: {} });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().code).toBe('faucet_misconfigured');
+    expect(unknown.chain.sent).toHaveLength(0);
+    await unknown.close();
   });
 
   it('POST /v1/faucet mints test USDC with the token admin key, once a day per wallet', async () => {

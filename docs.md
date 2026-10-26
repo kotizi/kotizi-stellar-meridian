@@ -347,6 +347,8 @@ To use a Stellar Asset Contract such as USDC: derive its id from the asset
 
 - every **member** needs one before paying or receiving a prize. This is a classic operation signed by the member
   (it cannot be relayed like a contract authorization), and it is **not automated yet**;
+- `GET /v1/me` reports `trustlines` per token for each wallet (`false` means a Stellar asset the wallet cannot hold yet, `null`
+  while its account is not active), so the app can block "pay" and explain what is missing; paying anyway answers `422 missing_trustline`;
 - the **admin** needs one too, because `claim_prize` also pays the fee to the admin. Without it every claim in that
   token fails while `admin_fee_bps > 0`. Create the group with fee 0 or give the admin a trustline first;
 - testnet USDC comes from Circle's faucet (`faucet.circle.com`), not from Kotizi's faucet.
@@ -365,7 +367,7 @@ POST /v1/faucet              mints the demo token (FAUCET_TOKEN), once a day per
 POST /v1/tx/prepare          {fn: join_group | pay_quota | claim_prize, groupId, index?} -> payloads to sign
 POST /v1/tx/relay            {transaction, validUntilLedger, signatures} -> sends it with the sponsor's signature
 POST /v1/groups/:id/draw     runs the next draw step (request or settle) now
-GET  /v1/config  /v1/groups  /v1/groups/:id  /v1/groups/:id/members  /v1/me
+GET  /v1/config  /v1/groups  /v1/groups/:id  /v1/groups/:id/members  /v1/me   (/v1/me: balance and trustline per token)
 ```
 
 The relay accepts only `join_group`, `pay_quota` and `claim_prize` on the Kotizi contract, only authorizations from the
@@ -379,6 +381,15 @@ npm install --legacy-peer-deps && npm start
 GROUP_ID=0 MEMBERS=2 npx tsx scripts/journey.ts
 ```
 
+The backend answers JSON; its responses (config, group, the user's wallets with balance and trustline per token) and every error code
+are documented, with real examples, in `backend/README.md`. In short:
+
+- `GET /v1/me` returns, for each wallet, `balances` and `trustlines` keyed by token contract id. `trustlines[token] === false`
+  means a Stellar asset (USDC, USDT0) the wallet cannot hold yet, `null` that its account is not active; the app should block
+  "pay" in that token and explain what is missing. Paying anyway answers `422 missing_trustline`.
+- `GET /v1/groups/:id` carries the group's token as `mint` and its `decimals`; amounts are strings in base units.
+- The faucet mints `FAUCET_AMOUNT_USDC` whole tokens of `FAUCET_TOKEN`, scaled by that token's decimals.
+
 See `backend/README.md` for every environment variable.
 
 ## 11. Storage lifetime (TTL)
@@ -386,10 +397,20 @@ See `backend/README.md` for every environment variable.
 Soroban storage entries expire unless their TTL is extended. Every call extends what it touches to the network maximum
 (about 180 days on testnet) whenever less than half remains, so an active group keeps itself alive. A group nobody
 touches for months can have its entries archived; Protocol 23 restores archived entries automatically when a
-transaction needs them (the simulation lists them), at a small cost. The contract has no function to extend entries for
-other callers; an operator can do it from outside with the CLI, for example
+transaction needs them (the simulation lists them), at a small cost.
+
+**One exception: the owner of each cota.** The NFT library (OpenZeppelin) keeps those entries only about 30 days after they
+were last touched, much less than the rest, and the contract cannot extend entries it does not own. So a group left alone for
+a month would have its owners archived (they would be restored by the next transaction that needs them, at a cost, but reads
+such as `cota_owners` would first need a restore).
+
+The backend keeper therefore does the upkeep from outside, with `ExtendFootprintTTL`: when it starts and every 6 hours
+(`KEEPER_MAINTENANCE_INTERVAL_MS`) it extends the contract and every group that is not finished or still has prizes to claim,
+to `TTL_EXTEND_TO_LEDGERS` (3,000,000 ledgers, about 170 days), but only if the closest entry has less than half of that left.
+A healthy group costs nothing; an extension costs about 0.06 XLM. The same can be done by hand with the CLI, for example
 `stellar contract extend --id $K --ledgers-to-extend 3000000 --source-account <key> --network testnet` for the contract
-instance (add `--key` for a specific entry). A keeper job that does this for idle groups is **not implemented yet**.
+instance (add `--key` for a specific entry). Reads made by the backend restore archived entries first, paid by the sponsor, so
+a long-idle group still answers.
 
 ## 12. Build, test, deploy
 
@@ -429,3 +450,13 @@ stellar contract bindings typescript --network testnet --contract-id <kotizi> --
 The contract spec includes the `Result<_, Error>` signatures and the error names (checked with the current deployment): the
 generated client types every call as `AssembledTransaction<Result<...>>` and carries a `{code: {message}}` table for the
 errors. `backend/scripts/beacon.ts` is the way to produce the `signature` argument (`Buffer`) for `settle_draw`.
+
+## 13. Known limits
+
+- **A winner can stop paying.** The prize of a round is `quota x the members who paid that round`, and after winning nothing forces a
+  member to keep paying, so the others bear that risk. Default and penalty handling are out of the project's scope; the usual
+  mitigation (keeping part of each prize in escrow until the group completes) is not implemented.
+- **Trustlines are reported, not created.** A member must already hold the trustline for a Stellar asset before paying in it.
+- **Not upgradeable, not audited.** Changing the contract means a new deployment with a new id; there is no emergency pause (the admin
+  cannot move funds, and a pause would be a new power over them).
+- **Testnet only.** The backend refuses any other network.

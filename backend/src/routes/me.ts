@@ -13,14 +13,21 @@ export function meRoutes(app: FastifyInstance, deps: Deps) {
     const wallets = await Promise.all(
       req.user.wallets.map(async (address) => {
         const active = await chain.accountExists(address);
+        const holdings = await Promise.all(
+          tokens.map(async (t) => [t.token, active ? await chain.tokenHolding(address, t.token) : undefined] as const),
+        );
         return {
           address,
           active,
           kyc: active ? await chain.isKyc(address) : false,
           /** Balance per enabled token (contract id -> base units). */
-          balances: Object.fromEntries(
-            await Promise.all(tokens.map(async (t) => [t.token, active ? (await chain.tokenBalance(address, t.token)).toString() : '0'] as const)),
-          ),
+          balances: Object.fromEntries(holdings.map(([token, h]) => [token, (h?.balance ?? 0n).toString()])),
+          /**
+           * Whether the wallet can hold each token (contract id -> bool). False means a Stellar Asset (USDC...) that needs
+           * a trustline the wallet does not have yet: it cannot pay or receive prizes in that token until it adds one.
+           * `null` until the account is active, when it cannot be known.
+           */
+          trustlines: Object.fromEntries(holdings.map(([token, h]) => [token, h ? h.trustline : null])),
         };
       }),
     );

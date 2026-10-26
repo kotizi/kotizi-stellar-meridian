@@ -1,8 +1,9 @@
 import { scValToNative } from '@stellar/stellar-sdk';
+import { vi } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '../src/db/index.js';
 import { GENESIS, PERIOD, roundTime } from '../src/drand.js';
-import { DRAW_EXPIRY_SECS, Keeper, SETTLE_SLACK_SECS, idleReason, nextStep, type KeeperView } from '../src/keeper.js';
+import { DRAW_EXPIRY_SECS, Keeper, SETTLE_SLACK_SECS, idleReason, needsUpkeep, nextStep, type KeeperView } from '../src/keeper.js';
 import { GroupStatus } from '../src/stellar/chain.js';
 import { callOf, harness, type Harness } from './app-helper.js';
 import { group } from './fake-chain.js';
@@ -109,5 +110,82 @@ describe('keeper against a chain', () => {
     expect(a).toMatchObject({ action: 'request' });
     const rows = await h.deps.db.select().from(schema.sponsoredTx);
     expect(rows.map((r) => [r.userId, r.kinds])).toEqual([['keeper', 'request_draw']]);
+  });
+});
+
+describe('keeper upkeep (contract entries must not expire)', () => {
+  let h: Harness;
+  let keeper: Keeper;
+  beforeEach(async () => {
+    h = await harness();
+    keeper = new Keeper(h.deps, { info() {}, warn() {}, error() {} });
+  });
+  afterEach(() => h.close());
+
+  it('only groups that still matter need upkeep', () => {
+    expect(needsUpkeep({ status: GroupStatus.Open, unclaimedBitmap: 0n })).toBe(true);
+    expect(needsUpkeep({ status: GroupStatus.DrawPending, unclaimedBitmap: 0n })).toBe(true);
+    expect(needsUpkeep({ status: GroupStatus.Completed, unclaimedBitmap: 0b10n })).toBe(true); // prizes still to claim
+    expect(needsUpkeep({ status: GroupStatus.Completed, unclaimedBitmap: 0n })).toBe(false);
+  });
+
+  it('extends the contract and each group that is about to expire, and nothing that is healthy', async () => {
+    h.chain.groupList = [group({ id: 0 }), group({ id: 1 }), group({ id: 2 })];
+    h.chain.expiring = new Set(['contract', 0, 2]);
+    const done = await keeper.maintain();
+    expect(done.map((a) => [a.target, a.error])).toEqual([['contract', undefined], [0, undefined], [2, undefined]]);
+    // one transaction each, signed by the keeper, source = keeper
+    expect(h.chain.sent).toHaveLength(3);
+    for (const { tx } of h.chain.sent) {
+      expect(tx.source).toBe(h.keeper.publicKey());
+      expect(tx.signatures).toHaveLength(1);
+      expect(tx.operations[0]!.type).toBe('extendFootprintTtl');
+    }
+    // healthy group 1 was checked and cost nothing
+    expect(h.chain.extendCalls.map((c) => c.groupId)).toEqual([null, 0, 1, 2]);
+    const rows = await h.deps.db.select().from(schema.sponsoredTx);
+    expect(rows.map((r) => [r.userId, r.kinds])).toEqual([['keeper', 'extend_ttl'], ['keeper', 'extend_ttl'], ['keeper', 'extend_ttl']]);
+  });
+
+  it('asks for the configured extension, and for it only below half of it', async () => {
+    h.chain.groupList = [group({ id: 0 })];
+    await keeper.maintain();
+    const { extendTo, whenBelow } = h.chain.extendCalls[0]!;
+    expect(extendTo).toBe(h.deps.config.TTL_EXTEND_TO_LEDGERS);
+    expect(whenBelow).toBe(Math.floor(extendTo / 2));
+    expect(h.chain.sent).toHaveLength(0); // nothing was expiring
+  });
+
+  it('skips finished groups with nothing to claim, but keeps those with prizes waiting', async () => {
+    h.chain.groupList = [
+      group({ id: 0, status: GroupStatus.Completed, unclaimedBitmap: 0n }),
+      group({ id: 1, status: GroupStatus.Completed, unclaimedBitmap: 0b1n }),
+    ];
+    h.chain.expiring = new Set([0, 1]);
+    const done = await keeper.maintain();
+    expect(done.map((a) => a.target)).toEqual([1]);
+    expect(h.chain.extendCalls.map((c) => c.groupId)).toEqual([null, 1]); // group 0 was not even inspected
+  });
+
+  it('a failed audit record does not turn a sent extension into a failure', async () => {
+    h.chain.groupList = [group({ id: 0 })];
+    h.chain.expiring = new Set(['contract']);
+    const insert = vi.spyOn(h.deps.db, 'insert').mockImplementation(() => {
+      throw new Error('db down');
+    });
+    const done = await keeper.maintain();
+    insert.mockRestore();
+    expect(done).toMatchObject([{ target: 'contract', txHash: expect.any(String) }]);
+    expect(done[0]!.error).toBeUndefined();
+    expect(h.chain.sent).toHaveLength(1);
+  });
+
+  it('a failing target is reported and does not stop the others', async () => {
+    h.chain.groupList = [group({ id: 0 }), group({ id: 1 })];
+    h.chain.expiring = new Set([0, 1]);
+    h.chain.failExtendFor = 0;
+    const done = await keeper.maintain();
+    expect(done).toMatchObject([{ target: 0, error: 'simulation failed' }, { target: 1, txHash: expect.any(String) }]);
+    expect(h.chain.sent).toHaveLength(1);
   });
 });

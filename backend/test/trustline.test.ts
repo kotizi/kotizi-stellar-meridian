@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { StellarTxError, isMissingTrustline, zeroIfNoTrustline } from '../src/stellar/errors.js';
+import { StellarTxError, holdingFrom, isMissingTrustline } from '../src/stellar/errors.js';
 import { bearer, harness, type Harness } from './app-helper.js';
 import { group, newKey } from './fake-chain.js';
 import { afterEach, beforeEach } from 'vitest';
@@ -17,11 +17,12 @@ describe('missing trustline', () => {
     expect(isMissingTrustline(new Error('trustline entry is missing'))).toBe(false); // not a chain error
   });
 
-  it('reads as a zero balance, while other failures still surface', async () => {
-    expect(await zeroIfNoTrustline(async () => 5n)).toBe(5n);
-    expect(await zeroIfNoTrustline(async () => { throw REAL; })).toBe(0n);
-    await expect(zeroIfNoTrustline(async () => { throw new StellarTxError('HostError: Error(Contract, #3)'); })).rejects.toBeInstanceOf(StellarTxError);
-    await expect(zeroIfNoTrustline(async () => { throw new TypeError('boom'); })).rejects.toThrow('boom');
+  it('reads as a zero balance without a trustline, while other failures still surface', async () => {
+    expect(await holdingFrom(async () => 5n)).toEqual({ balance: 5n, trustline: true });
+    expect(await holdingFrom(async () => 0n)).toEqual({ balance: 0n, trustline: true }); // zero is not "no trustline"
+    expect(await holdingFrom(async () => { throw REAL; })).toEqual({ balance: 0n, trustline: false });
+    await expect(holdingFrom(async () => { throw new StellarTxError('HostError: Error(Contract, #3)'); })).rejects.toBeInstanceOf(StellarTxError);
+    await expect(holdingFrom(async () => { throw new TypeError('boom'); })).rejects.toThrow('boom');
   });
 });
 

@@ -41,6 +41,10 @@ const schema = z.object({
   /** drand HTTP relay serving the quicknet chain (verified locally, so the relay is not trusted). */
   DRAND_URL: z.string().url().default('https://api.drand.sh'),
   KEEPER_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  /** How often the keeper checks that the contract's entries will not expire (6 h). */
+  KEEPER_MAINTENANCE_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000),
+  /** Entries are extended to live this many ledgers (~5 s each); must stay below the network maximum (3,110,400 on testnet). */
+  TTL_EXTEND_TO_LEDGERS: z.coerce.number().int().positive().default(3_000_000),
 
   METADATA_IMAGE_URL: z.string().default('https://example.com/kotizi/cota.png'),
 

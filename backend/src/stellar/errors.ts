@@ -46,12 +46,15 @@ export function isMissingTrustline(e: unknown): boolean {
   return e instanceof StellarTxError && /trustline entry is missing/i.test(e.message);
 }
 
-/** A balance read where "no trustline" simply means the account holds none of the token. */
-export async function zeroIfNoTrustline(read: () => Promise<bigint>): Promise<bigint> {
+/** What an account holds of a token. `trustline` is false only when the token needs one and the account has none. */
+export type Holding = { balance: bigint; trustline: boolean };
+
+/** Runs a balance read: "no trustline" means a zero balance and `trustline: false`; other failures surface. */
+export async function holdingFrom(read: () => Promise<bigint>): Promise<Holding> {
   try {
-    return await read();
+    return { balance: await read(), trustline: true };
   } catch (e) {
-    if (isMissingTrustline(e)) return 0n;
+    if (isMissingTrustline(e)) return { balance: 0n, trustline: false };
     throw e;
   }
 }

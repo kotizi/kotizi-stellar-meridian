@@ -112,7 +112,14 @@ function runs; simulation fills that list, the transaction pays. A restored entr
   (`env.deployer().extend_ttl*`): extended by the constructor and by the keeper.
 - **No `bump_group` function in the contract.** The keeper keeps live groups alive from outside with the
   `ExtendFootprintTTL` operation on the group's entries (group, prizes, owners), plus the instance/code. The contract surface
-  stays smaller. If footprint-only extension proves impractical we add the function back.
+  stays smaller. **Implemented and verified on testnet** (`Keeper.maintain`, `RpcChain.prepareExtend`): it takes the
+  footprint of the read-only simulations of `cota_owners` and `winners` (which lists exactly those entries, with the instance
+  and the code) and extends it when the closest entry has less than half of `TTL_EXTEND_TO_LEDGERS` (3,000,000) left; a
+  healthy group costs nothing, an extension about 0.06 XLM. It covers the contract and every group not finished or with
+  prizes still unclaimed, once at start and every `KEEPER_MAINTENANCE_INTERVAL_MS` (6 h).
+- **Finding (testnet, 2026-10-25): the NFT library keeps the owner of each cota only ~30 days** (`~514,000` ledgers left on
+  entries our own code had extended to ~3.1M). The contract's "extend to the maximum" policy cannot reach those entries, so a
+  group quiet for a month would have its owners archived; this is why the keeper job is required, not optional.
 - Restore: the relay's simulation fills the restore set, so the normal path needs no special code. The backend only handles
   the case where simulation says a restore is needed and the transaction would be too large, by submitting `RestoreFootprint`
   first. After any restore the keeper re-extends.

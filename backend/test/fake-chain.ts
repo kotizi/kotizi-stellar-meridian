@@ -103,8 +103,11 @@ export class FakeChain implements Chain {
   async isKyc(w: string) {
     return this.kyc.has(w);
   }
-  async tokenBalance(w: string, token: string) {
-    return (token === TOKEN ? this.usdc.get(w) : this.balances7.get(w)) ?? 0n;
+  /** Wallets that have no trustline to a token (token -> wallets): reads as the real SAC does. */
+  noTrustline = new Map<string, Set<string>>();
+  async tokenHolding(w: string, token: string) {
+    if (this.noTrustline.get(token)?.has(w)) return { balance: 0n, trustline: false };
+    return { balance: (token === TOKEN ? this.usdc.get(w) : this.balances7.get(w)) ?? 0n, trustline: true };
   }
   async accountExists(w: string) {
     return this.accounts.has(w);
@@ -166,6 +169,23 @@ export class FakeChain implements Chain {
       .setTimeout(60)
       .build();
     return { transaction: tx, estFeeStroops: Number(this.fee) };
+  }
+
+  /** Targets ('contract' or a group id) whose entries are about to expire; anything else is healthy. */
+  expiring = new Set<'contract' | number>();
+  extendCalls: { groupId: number | null; extendTo: number; whenBelow: number }[] = [];
+  failExtendFor: 'contract' | number | undefined;
+  async prepareExtend(source: string, groupId: number | null, opts: { extendTo: number; whenBelow: number }) {
+    this.extendCalls.push({ groupId, ...opts });
+    const target = groupId === null ? 'contract' : groupId;
+    if (this.failExtendFor === target) throw new StellarTxError('simulation failed');
+    if (!this.expiring.has(target)) return null;
+    // a fresh sequence number per transaction, as on the network, so each one has its own hash
+    const transaction = new TransactionBuilder(new Account(source, String(this.extendCalls.length)), { fee: '1000', networkPassphrase: PASSPHRASE })
+      .addOperation(Operation.extendFootprintTtl({ extendTo: opts.extendTo }))
+      .setTimeout(60)
+      .build();
+    return { transaction, estFeeStroops: 1000, entries: 6, minRemaining: 500_000 };
   }
 
   async simulate() {}

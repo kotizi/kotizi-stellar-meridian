@@ -6,6 +6,7 @@ import {
   Contract,
   Keypair,
   Operation,
+  SorobanDataBuilder,
   TransactionBuilder,
   nativeToScVal,
   rpc,
@@ -15,8 +16,8 @@ import {
 } from '@stellar/stellar-sdk';
 import { sleep } from '../util.js';
 import { u32 } from './invoke.js';
-import type { Chain, ContractConfig, Prepared, RawGroup, RawWinner, TokenInfo } from './chain.js';
-import { StellarTxError, zeroIfNoTrustline } from './errors.js';
+import type { Chain, ContractConfig, ExtendPlan, Prepared, RawGroup, RawWinner, TokenInfo } from './chain.js';
+import { StellarTxError, holdingFrom } from './errors.js';
 
 const TX_TIMEOUT_SECS = 120;
 const POLL_MS = 1_000;
@@ -41,17 +42,59 @@ export class RpcChain implements Chain {
 
   // ------------------------------------------------------------------ reads
 
+  /** Simulates a read-only call. Archived entries it needs are restored first (paid by the sponsor). */
+  private async simulateView(fn: string, args: xdr.ScVal[], contractId: string) {
+    const build = () =>
+      new TransactionBuilder(new Account(this.sponsor.publicKey(), '0'), {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(new Contract(contractId).call(fn, ...args))
+        .setTimeout(TX_TIMEOUT_SECS)
+        .build();
+    let sim = await this.server.simulateTransaction(build());
+    if (rpc.Api.isSimulationRestore(sim)) {
+      await this.restore(sim.restorePreamble);
+      sim = await this.server.simulateTransaction(build());
+    }
+    if (rpc.Api.isSimulationError(sim)) throw new StellarTxError(sim.error);
+    return sim;
+  }
+
   private async view(fn: string, args: xdr.ScVal[] = [], contractId = this.contractId): Promise<unknown> {
-    const tx = new TransactionBuilder(new Account(this.sponsor.publicKey(), '0'), {
+    const sim = await this.simulateView(fn, args, contractId);
+    return 'result' in sim && sim.result ? scValToNative(sim.result.retval) : undefined;
+  }
+
+  async prepareExtend(source: string, groupId: number | null, opts: { extendTo: number; whenBelow: number }): Promise<ExtendPlan | null> {
+    // The simulation of a read lists exactly the entries it touches; extending that footprint keeps those reads alive.
+    // `cota_owners` covers the group, the NFT owner entries and the contract; `winners` the prizes.
+    const calls: [string, xdr.ScVal[]][] = groupId === null ? [['tokens', []]] : [['cota_owners', [u32(groupId)]], ['winners', [u32(groupId)]]];
+    const byXdr = new Map<string, xdr.LedgerKey>();
+    for (const [fn, args] of calls) {
+      const sim = await this.simulateView(fn, args, this.contractId);
+      for (const key of sim.transactionData.getReadOnly()) byXdr.set(key.toXDR('base64'), key);
+    }
+    const keys = [...byXdr.values()];
+    // Only entries that exist and are live can be extended; getLedgerEntries answers just those.
+    const { entries, latestLedger } = await this.server.getLedgerEntries(...keys);
+    const live = entries.filter((e) => e.liveUntilLedgerSeq !== undefined);
+    if (live.length === 0) return null;
+    const minRemaining = Math.min(...live.map((e) => e.liveUntilLedgerSeq! - latestLedger));
+    if (minRemaining >= opts.whenBelow) return null;
+
+    const base = new TransactionBuilder(await this.server.getAccount(source), {
       fee: BASE_FEE,
       networkPassphrase: this.networkPassphrase,
+      sorobanData: new SorobanDataBuilder().setFootprint(live.map((e) => e.key), []).build(),
     })
-      .addOperation(new Contract(contractId).call(fn, ...args))
+      .addOperation(Operation.extendFootprintTtl({ extendTo: opts.extendTo }))
       .setTimeout(TX_TIMEOUT_SECS)
       .build();
-    const sim = await this.server.simulateTransaction(tx);
+    const sim = await this.server.simulateTransaction(base);
     if (rpc.Api.isSimulationError(sim)) throw new StellarTxError(sim.error);
-    return sim.result ? scValToNative(sim.result.retval) : undefined;
+    const transaction = rpc.assembleTransaction(base, sim).build();
+    return { transaction, estFeeStroops: Number(transaction.fee), entries: live.length, minRemaining };
   }
 
   async config(): Promise<ContractConfig> {
@@ -106,8 +149,8 @@ export class RpcChain implements Chain {
     return (await this.view('is_kyc', [new Address(wallet).toScVal()])) === true;
   }
 
-  async tokenBalance(wallet: string, token: string): Promise<bigint> {
-    return zeroIfNoTrustline(async () => BigInt((await this.view('balance', [new Address(wallet).toScVal()], token)) as bigint));
+  async tokenHolding(wallet: string, token: string) {
+    return holdingFrom(async () => BigInt((await this.view('balance', [new Address(wallet).toScVal()], token)) as bigint));
   }
 
   async accountExists(wallet: string): Promise<boolean> {

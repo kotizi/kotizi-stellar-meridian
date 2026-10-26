@@ -50,7 +50,11 @@ export interface Chain {
   cotaOwners(id: number): Promise<string[]>;
   totalPaid(id: number, index: number): Promise<bigint>;
   isKyc(wallet: string): Promise<boolean>;
-  tokenBalance(wallet: string, token: string): Promise<bigint>;
+  /**
+   * Balance of `token` and whether the account can hold it. Tokens that are Stellar Asset Contracts (USDC, USDT0)
+   * need a trustline: without one the balance is 0 and `trustline` is false. Plain contract tokens never need one.
+   */
+  tokenHolding(wallet: string, token: string): Promise<{ balance: bigint; trustline: boolean }>;
   accountExists(wallet: string): Promise<boolean>;
   /** XLM balance of an account in stroops (0 when it doesn't exist). */
   xlmBalance(wallet: string): Promise<bigint>;
@@ -68,8 +72,25 @@ export interface Chain {
   send(tx: Transaction): Promise<string>;
   /** Latest sequence number of an account (the next transaction uses +1). */
   accountSequence(wallet: string): Promise<string>;
+  /**
+   * Plans an `ExtendFootprintTTL` for what a group needs to keep working: its state, the owner of each cota (the NFT
+   * library keeps those only ~30 days), its prizes, and the contract instance and code. `groupId: null` plans the
+   * contract instance and code alone. Resolves `null` when every entry still lives at least `whenBelow` ledgers, so a
+   * healthy group costs nothing. `source` pays the fee and must sign the returned transaction.
+   */
+  prepareExtend(source: string, groupId: number | null, opts: { extendTo: number; whenBelow: number }): Promise<ExtendPlan | null>;
   /** Sponsor-paid account creation. */
   createAccount(funder: import('@stellar/stellar-sdk').Keypair, destination: string, startingBalanceXlm: string): Promise<string>;
 }
 
 export type Prepared = { transaction: Transaction; estFeeStroops: number };
+
+/** An unsigned transaction that extends the lifetime of the contract entries a group (or the contract) needs. */
+export type ExtendPlan = {
+  transaction: Transaction;
+  estFeeStroops: number;
+  /** Entries in the extension. */
+  entries: number;
+  /** Lifetime, in ledgers, of the entry closest to expiring (before the extension). */
+  minRemaining: number;
+};

@@ -65,8 +65,11 @@ export function onboardingRoutes(app: FastifyInstance, deps: Deps) {
       .limit(1);
     if (recent.length > 0) throw new HttpError(429, 'faucet_limit', 'One faucet claim per wallet per day');
 
-    const amount = BigInt(Math.round(config.FAUCET_AMOUNT_USDC * 1e6));
     try {
+      // The amount is in whole tokens; the token says how many base units that is.
+      const decimals = (await chain.tokens()).find((t) => t.token === config.FAUCET_TOKEN)?.decimals;
+      if (decimals === undefined) throw new HttpError(503, 'faucet_misconfigured', 'FAUCET_TOKEN is not a token enabled in the contract');
+      const amount = BigInt(Math.round(config.FAUCET_AMOUNT_USDC * 10 ** decimals));
       await ensureActive(wallet);
       const txHash = await invokeAs(deps.mintSigner, config.FAUCET_TOKEN!, 'mint', [addr(wallet), i128(amount)]);
       await db.insert(schema.faucetClaims).values({ wallet, userId: req.user.userId, amount: Number(amount), txHash });
