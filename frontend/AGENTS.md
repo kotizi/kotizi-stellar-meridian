@@ -90,11 +90,19 @@ product decisions, this one serves a single network: no multichain router, no ne
 - **E2E** (Playwright, `e2e/`, `bun run e2e`; once: `bunx playwright install chromium`): starts its
   own `next dev` on port 5000 with the mock chain client and the mock session. The `setup` project
   (`auth.setup.ts`) signs in, fills `/verify` and saves `playwright/.auth/user.json`; specs start
-  signed in (`login.spec.ts` opts out). Tests share no state: each joins first (`e2e/helpers.ts`:
-  `joinGroup`, `drawNow`). Pick groups by name, never by id; query by role and accessible name, never
-  by CSS. On a failure, read `test-results/<test>/error-context.md` (the page's aria snapshot) first.
-  Assertions wait up to 15 s (`expect.timeout`): the dev server compiles each route on its first
-  visit, and a `bun run build` empties its cache.
+  signed in (`login.spec.ts` and `sign-out.spec.ts` opt out or sign out). Tests share no state: each
+  joins first (`e2e/helpers.ts`: `openJoin` + `openJoinCheckout` = `joinGroup`, `drawNow`,
+  `createGroup`, `openAccountMenu`, `closeStatus`). Pick groups by name, never by id; query by role and
+  accessible name, never by CSS. On a failure, read `test-results/<test>/error-context.md` (the page's
+  aria snapshot) first. Assertions wait up to 15 s (`expect.timeout`): the dev server compiles each
+  route on its first visit, and a `bun run build` empties its cache.
+  Specs: `login`, `join`, `payment`, `draw`, `admin` (opens the form; creates a group and finds it in
+  the open list), `sign-out` (landing page, then `/payments` sends back to it), `failure` (the mock's
+  "Fail next confirmation" fails the checkout's deposit, "Try again" joins), `credit` (wins a draw and
+  checks the credit screen's amounts). Two tricks: the mock's test helpers live in the page's memory,
+  so set them after the last `page.goto` (a reload drops them); and a sure win needs a group the test
+  creates itself (bots never join new ones, so its share is the only eligible), with
+  `page.clock.install()` + `fastForward` past the 1-minute period instead of waiting.
 - Commits follow Conventional Commits (`feat(frontend): ...`).
 
 ## Contract scope the UI builds on
