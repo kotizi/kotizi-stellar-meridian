@@ -36,3 +36,8 @@ money moves.
 - [Kotizi contract on Stellar testnet](https://stellar.expert/explorer/testnet/contract/CDLG5PWRFTSLQNCWGFEBU4AEHKPMQCI5O4KXB3RGINP4Q2AY5BTQVFCR):
   the Soroban contract that holds the groups, the shares (NFTs), the payments and the draws.
 - [drand](https://drand.love/): the public randomness beacon the draws use.
+
+## Source code
+
+- [kotizi-stellar-meridian on GitHub](https://github.com/kotizi/kotizi-stellar-meridian): the Soroban
+  contract, the backend (sponsored relay, keeper) and this frontend.
