@@ -10,8 +10,13 @@ import type { AdminWallet } from "./context";
 // imports into Freighter, since Privy has no external Stellar wallets. Loaded only in the browser and
 // only when the app mounts the Privy session.
 
-type Freighter = typeof import("@stellar/freighter-api");
-let api: Promise<Freighter> | null = null;
+/** The Freighter calls the wallet uses (a seam for tests; the extension's own API in the app). */
+export type FreighterApi = Pick<
+  typeof import("@stellar/freighter-api"),
+  "isConnected" | "isAllowed" | "getAddress" | "requestAccess" | "getNetworkDetails" | "signTransaction"
+>;
+
+let api: Promise<FreighterApi> | null = null;
 const freighter = () => (api ??= import("@stellar/freighter-api"));
 
 /**
@@ -21,6 +26,44 @@ const freighter = () => (api ??= import("@stellar/freighter-api"));
 function unwrap<T extends { error?: { message?: string } }>(result: T): T {
   if (result.error) throw new Error(result.error.message ?? "Freighter didn't answer", { cause: result.error });
   return result;
+}
+
+/**
+ * Whether the extension is there and, if this site was allowed before, its address, read without a
+ * prompt. An extension that fails to answer counts as missing.
+ */
+export async function readFreighter(f: () => Promise<FreighterApi>): Promise<{ available: boolean; address: string | null }> {
+  let available = false;
+  try {
+    const wallet = await f();
+    available = (await wallet.isConnected()).isConnected;
+    if (available && (await wallet.isAllowed()).isAllowed) {
+      const { address } = await wallet.getAddress();
+      return { available, address: address || null };
+    }
+  } catch {
+    // No extension, or it didn't answer: as if it weren't there.
+  }
+  return { available, address: null };
+}
+
+/** Freighter's prompt to share its address with this site; resolves with it. */
+export async function connectFreighter(wallet: FreighterApi): Promise<string> {
+  return unwrap(await wallet.requestAccess()).address;
+}
+
+/**
+ * Signs with Freighter's prompt, only once Freighter is on `networkPassphrase` (else
+ * `WalletWrongNetwork`, before any prompt), as `address` when one is known.
+ */
+export async function signWithFreighter(
+  wallet: FreighterApi,
+  { transactionXdr, networkPassphrase, address }: { transactionXdr: string; networkPassphrase: string; address: string | null },
+): Promise<string> {
+  if (unwrap(await wallet.getNetworkDetails()).networkPassphrase !== networkPassphrase) {
+    throw new KotiziError("WalletWrongNetwork");
+  }
+  return unwrap(await wallet.signTransaction(transactionXdr, { networkPassphrase, address: address ?? undefined })).signedTxXdr;
 }
 
 /**
@@ -34,40 +77,25 @@ export function useFreighterWallet(): AdminWallet {
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      let found = false;
-      try {
-        const f = await freighter();
-        found = (await f.isConnected()).isConnected;
-        if (found && (await f.isAllowed()).isAllowed) {
-          const { address } = await f.getAddress();
-          if (!cancelled && address) setAddress(address);
-        }
-      } catch {
-        // No extension, or it didn't answer: as if it weren't there.
-      }
-      if (!cancelled) setAvailable(found);
-    })();
+    void readFreighter(freighter).then((found) => {
+      if (cancelled) return;
+      if (found.address) setAddress(found.address);
+      setAvailable(found.available);
+    });
     return () => {
       cancelled = true;
     };
   }, []);
 
   const connect = useCallback(async () => {
-    const { address } = unwrap(await (await freighter()).requestAccess());
-    setAddress(address);
-    return address;
+    const connected = await connectFreighter(await freighter());
+    setAddress(connected);
+    return connected;
   }, []);
 
   const signTransaction = useCallback(
-    async (transactionXdr: string, networkPassphrase: string) => {
-      const f = await freighter();
-      if (unwrap(await f.getNetworkDetails()).networkPassphrase !== networkPassphrase) {
-        throw new KotiziError("WalletWrongNetwork");
-      }
-      const { signedTxXdr } = unwrap(await f.signTransaction(transactionXdr, { networkPassphrase, address: address ?? undefined }));
-      return signedTxXdr;
-    },
+    async (transactionXdr: string, networkPassphrase: string) =>
+      signWithFreighter(await freighter(), { transactionXdr, networkPassphrase, address }),
     [address],
   );
 

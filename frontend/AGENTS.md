@@ -372,7 +372,9 @@ Plan (one commit per part, `bun run quality` and `bun run build` after each; bra
      is there), `address` (read without a prompt when the site was allowed before), `connect()`
      (`requestAccess`), `signTransaction(xdr, passphrase)` (checks Freighter's network first:
      `WalletWrongNetwork`). `@stellar/freighter-api` is imported on demand; its `{ error }` answers are
-     thrown with their message, so a declined prompt is `UserRejected`.
+     thrown with their message, so a declined prompt is `UserRejected`. The hook only wires state; the
+     logic is in `readFreighter`, `connectFreighter` and `signWithFreighter`, which take the Freighter
+     API as an argument and are unit-tested with a fake one (`freighter-wallet.test.ts`).
    - `features/admin`: `useAdminAddress` = the session's wallet when it is the admin (the mock: every
      account), else the connected Freighter address when that is the admin; `useIsAdmin` from it, so
      "Create group" shows for an admin whose Freighter was connected once. `AdminGate`: an account
