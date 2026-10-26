@@ -128,10 +128,13 @@ scope (roadmap only): marketplace, bids, default handling, real KYC provider, pr
 - **A token per group** (admin allowlist, at most 8): quotas and prizes are in the group's token base
   units, and **decimals differ per token** (the demo test token has 6, the 7-decimal test token and
   Circle's testnet USDC have 7). Circle's USDC is a classic asset: every holder (members and the admin,
-  who gets the fee) needs a trustline, which the app doesn't create. The backend faucet mints only its
+  who gets the fee) needs a trustline, which the app doesn't create; `GET /v1/me` reports `trustlines`
+  per token and paying without one answers `422 missing_trustline`. The backend faucet mints only its
   `FAUCET_TOKEN` (the 6-decimal demo token).
 - **Storage TTL**: Soroban entries expire and get archived; the contract extends what it touches and
-  the backend's relay simulation restores archived entries automatically.
+  the backend's relay simulation restores archived entries automatically. The NFT library keeps each
+  share's owner only ~30 days, so the backend keeper also extends the contract and every live group
+  from outside (`ExtendFootprintTTL`, every 6 h), and its reads restore archived entries first.
 - **Backend** (`../backend`, `backend/README.md`): Privy-authenticated reads (`/v1/config`,
   `/v1/groups[/:id[/members]]`, `/v1/me`), the gasless relay (`POST /v1/tx/prepare` +
   `POST /v1/tx/relay`), "draw now" (`POST /v1/groups/:id/draw`) plus a keeper, and demo onboarding
@@ -338,7 +341,8 @@ Plan (one commit per part, `bun run quality` and `bun run build` after each; bra
      codes) plus `UNMAPPED_CONTRACT_ERRORS`; a test reads `contract/kotizi/src/errors.rs` and fails on
      any name in neither. Also `Error(Contract, #100)` (the demo token's `InsufficientBalance`) →
      `InsufficientFunds`, `account_not_active` → `KycRequired`, `authorization_expired` →
-     `TransactionExpired`, `not_user_wallet` → `NotAssetOwner`.
+     `TransactionExpired`, `not_user_wallet` → `NotAssetOwner`, `missing_trustline` (422: paying in a
+     Stellar asset the wallet has no trustline for) → `TrustlineRequired`.
 5. `StellarKotiziClient` actions. **Done** (`stellar/client.ts`, tested):
    - **Relay** (`relay()`): `POST /v1/tx/prepare { fn, groupId, index?, wallet }` →
      `{ transaction, validUntilLedger, payloads }`; each 32-byte payload is signed by the session's
